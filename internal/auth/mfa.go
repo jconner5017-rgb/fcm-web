@@ -324,3 +324,28 @@ func ParseKey(s string) ([]byte, error) {
 	}
 	return nil, errors.New("MFA_ENCRYPTION_KEY must be at least 32 random characters")
 }
+
+// SealFor encrypts other secrets (a seller's AI key) with the same key as the
+// 2FA secrets; purpose is bound in, so a box made for one use can't be opened
+// as another.
+func (m *MFA) SealFor(purpose string, secret []byte) ([]byte, error) {
+	g, err := m.aead()
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, g.NonceSize())
+	rand.Read(nonce)
+	return g.Seal(nonce, nonce, secret, []byte(purpose)), nil
+}
+
+// OpenFor decrypts a box made by SealFor with the same purpose.
+func (m *MFA) OpenFor(purpose string, box []byte) ([]byte, error) {
+	g, err := m.aead()
+	if err != nil {
+		return nil, err
+	}
+	if len(box) < g.NonceSize() {
+		return nil, errors.New("bad secret")
+	}
+	return g.Open(nil, box[:g.NonceSize()], box[g.NonceSize():], []byte(purpose))
+}

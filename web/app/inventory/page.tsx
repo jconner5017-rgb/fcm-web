@@ -48,6 +48,9 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
           Nothing has synced yet. In FireCardManager on your PC, open <b>Settings &gt; FireCardManager Web</b>, click <b>Open Cloud Sync</b> and link
           the PC. Your boxes, cards and photos appear here after the first sync.
         </p>
+        <p className="mt-4">
+          No PC? <Link href="/inventory/add" className="font-semibold text-fire">Add cards with your phone</Link>.
+        </p>
       </div>
     );
   }
@@ -68,6 +71,8 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             {sum.last_sync && <> · last sync {when(sum.last_sync)}</>}
           </p>
         </div>
+        <div className="flex flex-wrap items-center gap-3">
+        <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>
         {sum.editions.length > 1 && (
           <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
             {sum.editions.map((e) => (
@@ -81,6 +86,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             ))}
           </div>
         )}
+        </div>
       </div>
 
       {sum.conflicts > 0 && (

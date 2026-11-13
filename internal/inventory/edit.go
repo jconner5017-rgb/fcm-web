@@ -52,7 +52,8 @@ var editable = map[string]kind{
 	"status": kStatus, "is_rookie": kBool, "is_autograph": kBool, "is_memorabilia": kBool, "is_short_print": kBool,
 	"is_error_variant": kBool, "is_blank_back": kBool, "is_chase": kBool, "is_foil": kBool, "is_sketch_card": kBool,
 	"grading_company": kText, "grading_cert_number": kText, "card_grade": kText, "serial_number": kText,
-	"box_id": kBox, "slot_row": kRow, "slot_number": kSlot,
+	// Box, row and slot aren't here on purpose: cards are filed (and moved)
+	// only in FireCardManager, so a card is never misplaced from a phone.
 }
 
 // Value fields the desktop stores as non-nullable numbers: null isn't allowed.

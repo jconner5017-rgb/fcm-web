@@ -35,6 +35,8 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/db"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/identify"
+	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/license"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 )
@@ -45,6 +47,35 @@ type env struct {
 	srv    *httptest.Server
 	now    time.Time
 	bucket *fakeBucket
+	ai     *fakeAI
+}
+
+// fakeAI stands in for Claude and Gemini.
+type fakeAI struct {
+	calls    int
+	lastKey  string
+	lastPath string
+	reject   bool
+}
+
+func (f *fakeAI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.calls++
+	f.lastPath = r.URL.Path
+	f.lastKey = r.Header.Get("x-api-key") + r.Header.Get("x-goog-api-key")
+	if f.reject {
+		w.WriteHeader(401)
+		return
+	}
+	answer := `{"category":"basketball","playerName":"Braeden Shrewsberry","team":"Notre Dame","year":2025,"season":null,
+		"brand":"Bowman","setName":"2025 Bowman Chrome University - Prospects","cardNumber":"#BCP-29","variety":"Blue Sapphire",
+		"serialNumber":null,"condition":"Raw - Near Mint","isRookie":true,"isAutograph":false,"isMemorabilia":false,
+		"estimatedValueUsd":12,"confidence":0.9,"notes":"1st Bowman"}`
+	if strings.Contains(r.URL.Path, "generateContent") {
+		b, _ := json.Marshal(answer)
+		fmt.Fprintf(w, `{"candidates":[{"content":{"parts":[{"text":%s}]}}]}`, b)
+		return
+	}
+	fmt.Fprintf(w, `{"content":[{"type":"tool_use","name":"submit_card_identification","input":%s}]}`, answer)
 }
 
 // fakeBucket stands in for R2: it stores whatever is PUT to a signed link.
@@ -100,7 +131,9 @@ func setup(t *testing.T) *env {
 	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}}
+	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
+	aiSrv := httptest.NewServer(e.ai)
+	t.Cleanup(aiSrv.Close)
 	bucketSrv := httptest.NewServer(e.bucket)
 	t.Cleanup(bucketSrv.Close)
 	syncSvc := &cloudsync.Service{DB: d}
@@ -112,6 +145,7 @@ func setup(t *testing.T) *env {
 	s := New(Options{
 		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key},
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
+		AI:  &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"},
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), SessionTTL: time.Hour, WebURL: "https://app.test",
 	})
 	e.srv = httptest.NewServer(s.Handler())
@@ -884,21 +918,13 @@ func TestInventoryEdits(t *testing.T) {
 		t.Fatalf("live status: %d", code)
 	}
 
-	// Moving into a taken slot is refused; a free one works.
+	// Box, row and slot can't be changed on the website (only in FireCardManager).
 	code, res = owner.do("PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 2,
-		"fields": map[string]any{"box_id": boxB, "slot_row": "c", "slot_number": 4}})
-	if code != 422 || !strings.Contains(res["error"].(map[string]any)["fields"].(map[string]any)["slot_number"].(string), "Max Strus") {
-		t.Fatalf("taken slot: %d %v", code, res)
-	}
-	out = owner.must(200, "PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 2,
 		"fields": map[string]any{"box_id": boxB, "slot_row": "c", "slot_number": 6}})
-	if c := out["card"].(map[string]any); c["box_name"] != "Box B" || c["data"].(map[string]any)["slot_row"] != "C" {
-		t.Fatalf("move: %v", c)
+	if code != 422 || len(res["error"].(map[string]any)["fields"].(map[string]any)) != 3 {
+		t.Fatalf("move refused: %d %v", code, res)
 	}
-	if code, _ := owner.do("PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 3,
-		"fields": map[string]any{"box_id": uuid(999)}}); code != 422 {
-		t.Fatalf("unknown box: %d", code)
-	}
+	owner.must(200, "PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 2, "fields": map[string]any{"team": "Magic"}})
 
 	// A PC edit the website didn't see becomes a conflict when the website overwrites it.
 	push(t, pc, ch("card", card, 3, time.Now(), map[string]any{"estimated_value": 9}))
@@ -959,5 +985,133 @@ func TestInventoryEdits(t *testing.T) {
 	}
 	if code, _ := owner.do("PATCH", "/v1/inventory/cards/"+other, map[string]any{"base_version": 1, "fields": map[string]any{"sale_price": 1}}); code != 402 {
 		t.Fatalf("no add-on: %d", code)
+	}
+}
+
+func TestAddCardFromPhone(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("phone@example.com")
+	pc := e.link(owner, "sports", "HWID-PH", "")
+	box := uuid(521)
+	now := time.Now()
+	push(t, pc, ch("box", box, 0, now, map[string]any{"name": "Basketball"}),
+		ch("card", uuid(621), 0, now, map[string]any{"player_name": "Last In Row", "status": "Ready", "box_id": box, "slot_row": "B", "slot_number": 50}),
+		ch("card", uuid(622), 0, now, map[string]any{"player_name": "Earlier", "status": "Ready", "box_id": box, "slot_row": "A", "slot_number": 7}))
+	_, seq := pull(t, pc, 0)
+	jpeg := bytes.Repeat([]byte{0xFF, 0xD8}, 500)
+
+	// No key yet.
+	if code, res := owner.do("POST", "/v1/inventory/identify", map[string]any{"front": jpeg, "back": jpeg}); code != 409 || errCode(res) != "no_ai_key" {
+		t.Fatalf("no key: %d %v", code, res)
+	}
+	// The PC sends its key; the website shows which one, never the key.
+	pc.must(204, "POST", "/v1/devices/ai-key", map[string]any{"provider": "claude", "key": "sk-ant-test-key-0123456789-abcd", "model": ""})
+	k := owner.must(200, "GET", "/v1/me/ai-key", nil)["ai_key"].(map[string]any)
+	if k["provider"] != "claude" || k["last4"] != "abcd" || k["source"] != "pc" || k["device_name"] == "" {
+		t.Fatalf("key info: %v", k)
+	}
+	var enc []byte
+	e.db.QueryRow(`SELECT key_enc FROM account_ai_keys`).Scan(&enc)
+	if bytes.Contains(enc, []byte("sk-ant")) {
+		t.Fatal("key stored in the clear")
+	}
+
+	id := owner.must(200, "POST", "/v1/inventory/identify", map[string]any{"edition": "sports", "front": jpeg, "back": jpeg})
+	f := id["fields"].(map[string]any)
+	if e.ai.lastKey != "sk-ant-test-key-0123456789-abcd" || f["sport"] != "Basketball" || f["set_name"] != "Bowman Chrome University - Prospects" ||
+		f["card_number"] != "BCP-29" || f["condition"] != "Raw - NM" || f["sale_price"].(float64) != 15 || f["status"] != "Ready" || f["is_rookie"] != true {
+		t.Fatalf("identified: %v (key %q)", f, e.ai.lastKey)
+	}
+
+	// A key typed on the website wins over the PC's, and Gemini works too.
+	owner.must(200, "PUT", "/v1/me/ai-key", map[string]any{"provider": "gemini", "key": "AIzaSy-web-typed-key-000000wxyz", "model": "gemini-flash-lite-latest"})
+	pc.must(204, "POST", "/v1/devices/ai-key", map[string]any{"provider": "claude", "key": "sk-ant-other-key-0123456789-zzzz"})
+	owner.must(200, "POST", "/v1/inventory/identify", map[string]any{"front": jpeg, "back": jpeg})
+	if e.ai.lastKey != "AIzaSy-web-typed-key-000000wxyz" || !strings.Contains(e.ai.lastPath, "gemini-flash-lite-latest:generateContent") {
+		t.Fatalf("gemini call: %q %q", e.ai.lastKey, e.ai.lastPath)
+	}
+	e.ai.reject = true
+	if code, res := owner.do("POST", "/v1/inventory/identify", map[string]any{"front": jpeg, "back": jpeg}); code != 502 || errCode(res) != "ai_key_rejected" {
+		t.Fatalf("rejected key: %d %v", code, res)
+	}
+
+	// Saved into its category's box, right after the last card: a new row.
+	created := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": f})
+	cd := created["data"].(map[string]any)
+	if cd["slot_row"] != "C" || cd["slot_number"].(float64) != 1 || created["box_name"] != "Basketball" || cd["created_at"] == nil {
+		t.Fatalf("created: %v", created)
+	}
+	cardID := created["id"].(string)
+	// Next one goes to C2; the location can't be chosen; a new category gets its own box.
+	f2 := map[string]any{"sport": "Basketball", "player_name": "Second", "brand": "Topps", "set_name": "Chrome", "card_number": "1", "condition": "Raw - NM", "year": 2024}
+	if c := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": f2}); c["data"].(map[string]any)["slot_number"].(float64) != 2 ||
+		c["data"].(map[string]any)["slot_row"] != "C" || c["data"].(map[string]any)["status"] != "NotForSale" {
+		t.Fatalf("second: %v", c)
+	}
+	f2["slot_row"] = "Z"
+	if code, _ := owner.do("POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": f2}); code != 422 {
+		t.Fatalf("chosen slot: %d", code)
+	}
+	delete(f2, "slot_row")
+	f2["sport"] = "Football"
+	fb := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": f2})
+	if fb["box_name"] != "Football" || fb["data"].(map[string]any)["slot_row"] != "A" || fb["data"].(map[string]any)["slot_number"].(float64) != 1 {
+		t.Fatalf("new box: %v", fb)
+	}
+	delete(f2, "sport")
+	if code, res := owner.do("POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": f2}); code != 422 ||
+		res["error"].(map[string]any)["fields"].(map[string]any)["sport"] == nil {
+		t.Fatalf("no category: %d %v", code, res)
+	}
+	if code, res := owner.do("POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": map[string]any{"player_name": "x"}}); code != 422 ||
+		len(res["error"].(map[string]any)["fields"].(map[string]any)) < 4 {
+		t.Fatalf("required: %d %v", code, res)
+	}
+
+	// Photos for the new card, then the PC pulls the card with them.
+	out := owner.must(200, "POST", "/v1/inventory/cards/"+cardID+"/photo-urls", map[string]any{"photos": []map[string]any{
+		{"side": "front", "bytes": len(jpeg)}, {"side": "front_thumb", "bytes": len(jpeg)}}})
+	var ids []string
+	for _, u := range out["uploads"].([]any) {
+		slot := u.(map[string]any)
+		req, _ := http.NewRequest("PUT", slot["upload_url"].(string), bytes.NewReader(jpeg))
+		http.DefaultClient.Do(req)
+		ids = append(ids, slot["photo_id"].(string))
+	}
+	owner.must(200, "POST", "/v1/inventory/photos/confirm", map[string]any{"photo_ids": ids})
+	rows, _ := pull(t, pc, seq)
+	pf := rows[cardID]["fields"].(map[string]any)
+	if pf["player_name"] != "Braeden Shrewsberry" || pf["front_photo_id"] != ids[0] || pf["front_thumb_photo_id"] != ids[1] || pf["box_id"] != box {
+		t.Fatalf("PC pull: %v", pf)
+	}
+
+	// The website's key can be removed; a PC can't remove it.
+	owner.must(204, "DELETE", "/v1/me/ai-key", nil)
+	if k := owner.must(200, "GET", "/v1/me/ai-key", nil)["ai_key"]; k != nil {
+		t.Fatalf("after delete: %v", k)
+	}
+}
+
+func TestRowLetters(t *testing.T) {
+	for in, want := range map[string]string{"A": "B", "Z": "AA", "AZ": "BA", "ZZ": "AAA", "B": "C"} {
+		if got := inventory.RowLetter(inventory.RowIndex(in) + 1); got != want {
+			t.Fatalf("%s -> %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestFilingFullBoxRollsOver(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("full@example.com")
+	pc := e.link(owner, "sports", "HWID-FULL", "")
+	box := uuid(531)
+	now := time.Now()
+	push(t, pc, ch("box", box, 0, now, map[string]any{"name": "Hockey"}),
+		ch("card", uuid(631), 0, now, map[string]any{"player_name": "Last", "status": "Ready", "box_id": box, "slot_row": "Z", "slot_number": 50}))
+	owner.must(200, "PUT", "/v1/me/ai-key", map[string]any{"provider": "claude", "key": "sk-ant-test-key-0123456789-abcd"})
+	c := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "fields": map[string]any{
+		"sport": "Hockey", "player_name": "Overflow", "brand": "UD", "set_name": "Series 1", "card_number": "201", "condition": "Raw - NM", "year": 2024}})
+	if c["box_name"] != "Hockey (cont. 2)" || c["data"].(map[string]any)["slot_row"] != "A" {
+		t.Fatalf("rollover: %v", c)
 	}
 }

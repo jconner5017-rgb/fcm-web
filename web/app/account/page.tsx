@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { getMe } from "@/lib/api";
+import { apiGet, getMe } from "@/lib/api";
+import AIKeyForm, { type AIKey } from "@/components/AIKeyForm";
 import { addonActive, shortDate } from "@/lib/client";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
@@ -10,6 +11,7 @@ export default async function AccountPage() {
   const { me } = await getMe();
   if (!me) redirect("/signin?next=/account");
   const a = me.account;
+  const aiKey = (await apiGet<{ ai_key: AIKey | null }>("/v1/me/ai-key")).data?.ai_key ?? null;
   return (
     <div className="mt-8 max-w-[640px] space-y-6">
       <h1 className="text-[26px] font-bold">Account</h1>
@@ -21,6 +23,10 @@ export default async function AccountPage() {
           <span className="text-muted">Cloud sync:</span>{" "}
           {addonActive(a) ? `web add-on until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
         </p>
+      </section>
+      <section className="card" id="ai-key">
+        <h2 className="text-[18px] font-bold">AI key for phone identification</h2>
+        <AIKeyForm initial={aiKey} />
       </section>
       <section className="card">
         <h2 className="text-[18px] font-bold">Two-factor sign-in</h2>

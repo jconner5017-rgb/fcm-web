@@ -38,6 +38,8 @@ type Service struct {
 	DB     *sql.DB
 	Sync   *cloudsync.Service // for edits from the website
 	Photos PhotoSigner        // signed photo links for the browser (nil: none)
+	Sealer Sealer             // encrypts the seller's AI key
+	AI     Identifier         // names cards from photos
 }
 
 // PhotoSigner makes browser links for card photos (photos.Service).

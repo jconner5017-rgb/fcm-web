@@ -5,7 +5,6 @@ import { useState } from "react";
 import { send } from "@/lib/client";
 import { liveText, money, type CardDetail, type CardData } from "@/lib/inventory";
 
-type Box = { id: string; name: string };
 type Mode = "" | "edit" | "sold";
 
 const SPORTS_FLAGS: [keyof CardData, string][] = [
@@ -29,7 +28,7 @@ function todayLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export default function CardActions({ card, boxes }: { card: CardDetail; boxes: Box[] }) {
+export default function CardActions({ card }: { card: CardDetail }) {
   const router = useRouter();
   const d = card.data;
   const sold = d.status === "Sold";
@@ -48,7 +47,6 @@ export default function CardActions({ card, boxes }: { card: CardDetail; boxes: 
     grading_company: d.grading_company ?? "", card_grade: d.card_grade ?? "", grading_cert_number: d.grading_cert_number ?? "", serial_number: d.serial_number ?? "",
     estimated_value: d.estimated_value != null ? String(d.estimated_value) : "", sale_price: d.sale_price != null ? String(d.sale_price) : "",
     paid_price: d.paid_price != null ? String(d.paid_price) : "", status: d.status ?? "Ready",
-    box_id: card.box_id ?? "", slot_row: d.slot_row ?? "", slot_number: d.slot_number ? String(d.slot_number) : "",
   };
   const [f, setF] = useState(initial);
   const flagList = [...SPORTS_FLAGS, ...(tcg ? TCG_FLAGS : [])];
@@ -76,8 +74,8 @@ export default function CardActions({ card, boxes }: { card: CardDetail; boxes: 
   async function saveEdit(e: React.FormEvent) {
     e.preventDefault();
     const text = ["player_name", "team", "brand", "set_name", "card_number", "variety", "condition", "grading_company", "card_grade",
-      "grading_cert_number", "serial_number", "slot_row"] as const;
-    const nums = ["year", "season_end", "slot_number", "estimated_value", "sale_price", "paid_price"] as const;
+      "grading_cert_number", "serial_number"] as const;
+    const nums = ["year", "season_end", "estimated_value", "sale_price", "paid_price"] as const;
     const fields: Record<string, unknown> = {};
     const bad: Record<string, string> = {};
     for (const k of text) if (f[k] !== initial[k]) fields[k] = f[k].trim() === "" ? null : f[k];
@@ -89,7 +87,6 @@ export default function CardActions({ card, boxes }: { card: CardDetail; boxes: 
       else fields[k] = Number(s);
     }
     if (f.status !== initial.status) fields.status = f.status;
-    if (f.box_id !== initial.box_id) fields.box_id = f.box_id || null;
     for (const [k, v] of Object.entries(flags)) if (v !== initialFlags[k]) fields[k] = v;
     if (Object.keys(bad).length) return setFieldErrors(bad);
     if (Object.keys(fields).length === 0) return setMode("");
@@ -194,21 +191,7 @@ export default function CardActions({ card, boxes }: { card: CardDetail; boxes: 
             </label>
           </fieldset>
 
-          <fieldset className="grid gap-3 sm:grid-cols-3">
-            <legend className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">Where it is</legend>
-            <Field label="Box" error={fieldErrors.box_id}>
-              <select className="field" value={f.box_id} onChange={set("box_id")}>
-                <option value="">Not in a box</option>
-                {boxes.map((b) => <option key={b.id} value={b.id}>{b.name || "Unnamed box"}</option>)}
-              </select>
-            </Field>
-            <Field label="Row" error={fieldErrors.slot_row}>
-              <input className="field uppercase" value={f.slot_row} onChange={set("slot_row")} maxLength={20} />
-            </Field>
-            <Field label="Slot" error={fieldErrors.slot_number}>
-              <input className="field num" inputMode="numeric" value={f.slot_number} onChange={set("slot_number")} />
-            </Field>
-          </fieldset>
+          <p className="text-[13px] text-muted">Box, row and slot are changed only in FireCardManager on your PC, so a card is never misplaced.</p>
 
           <fieldset className="grid gap-3 sm:grid-cols-2">
             <legend className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">Card</legend>

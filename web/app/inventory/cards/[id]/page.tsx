@@ -58,7 +58,6 @@ export default async function CardPage({
   const res = await apiGet<CardDetail>(`/v1/inventory/cards/${encodeURIComponent(id)}`);
   if (res.status === 404) notFound();
   const c = res.data;
-  const boxes = c ? (await apiGet<{ boxes: { id: string; name: string }[] }>(`/v1/inventory/boxes?edition=${c.edition}`)).data?.boxes ?? [] : [];
   if (!c) return <p className="card mt-8">This card couldn&apos;t be loaded just now. Refresh the page in a minute.</p>;
   const d = c.data;
   const live = liveText(d);
@@ -90,7 +89,7 @@ export default async function CardPage({
             </div>
           </div>
 
-          <CardActions card={c} boxes={boxes} />
+          <CardActions card={c} />
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <div className="card !p-3">

@@ -18,6 +18,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 )
@@ -32,6 +33,7 @@ type Options struct {
 	Devices      *devices.Service
 	Sync         *cloudsync.Service
 	Photos       *photos.Service
+	AI           *identify.Client // nil: the real AI services
 	Log          *slog.Logger
 	CookieSecure bool
 	SessionTTL   time.Duration
@@ -67,7 +69,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos}, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -122,6 +124,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /v1/inventory/cards/{id}", requireAccount(s.handleInvEdit))
 	mux.HandleFunc("POST /v1/inventory/cards/{id}/sold", requireAccount(s.handleInvMarkSold))
 	mux.HandleFunc("GET /v1/inventory/conflicts", requireAccount(s.handleInvConflicts))
+	mux.HandleFunc("POST /v1/inventory/identify", requireAccount(s.handleInvIdentify))
+	mux.HandleFunc("POST /v1/inventory/cards", requireAccount(s.handleInvCreate))
+	mux.HandleFunc("POST /v1/inventory/cards/{id}/photo-urls", requireAccount(s.handleInvPhotoURLs))
+	mux.HandleFunc("POST /v1/inventory/photos/confirm", requireAccount(s.handleInvPhotoConfirm))
+	mux.HandleFunc("GET /v1/me/ai-key", requireAccount(s.handleAIKeyGet))
+	mux.HandleFunc("PUT /v1/me/ai-key", requireAccount(s.handleAIKeyPut))
+	mux.HandleFunc("DELETE /v1/me/ai-key", requireAccount(s.handleAIKeyDelete))
+	mux.HandleFunc("POST /v1/devices/ai-key", s.requireDevice(s.handleDeviceAIKey))
 	mux.HandleFunc("POST /v1/inventory/conflicts/{id}", requireAccount(s.handleInvResolve))
 
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
@@ -1097,6 +1107,194 @@ func (s *Server) handleInvResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.internalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------- adding cards from the website ----------------
+
+func aiClient(c *identify.Client) *identify.Client {
+	if c == nil {
+		return &identify.Client{}
+	}
+	return c
+}
+
+func (s *Server) handleInvIdentify(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Edition string `json:"edition"`
+		Front   []byte `json:"front"` // JPEG, base64 in the JSON
+		Back    []byte `json:"back"`
+	}
+	if !decodeJSONMax(w, r, &in, 12<<20) {
+		return
+	}
+	sess, _ := currentSession(r)
+	ed := in.Edition
+	if ed != "tcg" {
+		ed = "sports"
+	}
+	out, err := s.inv.Identify(r.Context(), sess.Account.ID, ed, in.Front, in.Back)
+	var fe inventory.FieldErrors
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, out)
+	case errors.As(err, &fe):
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Take a photo of the front and the back.", fe)
+	case errors.Is(err, inventory.ErrNoAIKey):
+		writeError(w, http.StatusConflict, "no_ai_key",
+			"Add your Claude or Gemini API key on the Account page (or link a PC that has one in FireCardManager) to identify cards.", nil)
+	case errors.Is(err, inventory.ErrTooMany):
+		writeError(w, http.StatusTooManyRequests, "too_many", "That's a lot of cards this hour. Try again in a few minutes.", nil)
+	case errors.Is(err, identify.ErrBadKey):
+		writeError(w, http.StatusBadGateway, "ai_key_rejected", "Your AI key was turned down by the AI service. Check it on the Account page.", nil)
+	default:
+		s.log.Warn("identify failed", "err", err)
+		writeError(w, http.StatusBadGateway, "ai_failed", "The AI couldn't identify this card just now. Try again, or fill in the details yourself.", nil)
+	}
+}
+
+func (s *Server) handleInvCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Edition string                     `json:"edition"`
+		Fields  map[string]json.RawMessage `json:"fields"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	c, err := s.inv.CreateCard(r.Context(), sess.Account.ID, in.Edition, inventory.NewID(), in.Fields)
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// handleInvPhotoURLs: signed upload links for a card's photos, like a PC
+// gets (front, back and their thumbnails), for a card added on the website.
+func (s *Server) handleInvPhotoURLs(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Photos []photos.UploadRequest `json:"photos"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	c, err := s.inv.Card(r.Context(), sess.Account.ID, r.PathValue("id"))
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	for i := range in.Photos {
+		in.Photos[i].CardID = c.ID
+	}
+	slots, err := s.photos.UploadURLs(r.Context(), cloudsync.Device{AccountID: sess.Account.ID, Edition: c.Edition}, in.Photos)
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"uploads": slots})
+}
+
+func (s *Server) handleInvPhotoConfirm(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		PhotoIDs []string `json:"photo_ids"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	res, err := s.photos.Confirm(r.Context(), cloudsync.Device{AccountID: sess.Account.ID}, in.PhotoIDs)
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"photos": res})
+}
+
+func (s *Server) handleAIKeyGet(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	k, err := s.inv.AIKey(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ai_key": k})
+}
+
+func (s *Server) handleAIKeyPut(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Provider string `json:"provider"`
+		Key      string `json:"key"`
+		Model    string `json:"model"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	err := s.inv.SaveAIKey(r.Context(), sess.Account.ID, in.Provider, in.Key, in.Model, "web", "")
+	if errors.Is(err, inventory.ErrBadProvider) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Choose Claude or Gemini.", map[string]string{"provider": "Choose Claude or Gemini."})
+		return
+	}
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	s.handleAIKeyGet(w, r)
+}
+
+func (s *Server) handleAIKeyDelete(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	if err := s.inv.DeleteAIKey(r.Context(), sess.Account.ID, "web"); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeviceAIKey: a linked PC sends the AI key saved in FireCardManager
+// (or an empty key when it was removed there). A key typed on the website
+// isn't replaced by a PC's.
+func (s *Server) handleDeviceAIKey(w http.ResponseWriter, r *http.Request) {
+	d, _, ok := s.syncDevice(w, r, false)
+	if !ok {
+		return
+	}
+	var in struct {
+		Provider string `json:"provider"`
+		Key      string `json:"key"`
+		Model    string `json:"model"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	var err error
+	if strings.TrimSpace(in.Key) == "" {
+		err = s.inv.DeleteAIKey(r.Context(), d.AccountID, "pc")
+	} else {
+		err = s.inv.SaveAIKey(r.Context(), d.AccountID, in.Provider, in.Key, in.Model, "pc", d.ID)
+	}
+	if errors.Is(err, inventory.ErrBadProvider) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", err.Error(), nil)
+		return
+	}
+	if err != nil {
+		s.invEditError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
