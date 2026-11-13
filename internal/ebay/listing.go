@@ -21,32 +21,49 @@ type Card struct {
 	EbayListingID  *string  `json:"ebay_listing_id"`
 }
 
-// Settings are the seller's eBay choices on the website (Account > eBay).
+// Settings are the seller's eBay choices on the website (Account > eBay):
+// shipping profiles like FireCardManager's, returns, ship-from location and
+// store name. eBay shipping/payment/return policies are made from these
+// when listing, the way the desktop does it.
 type Settings struct {
-	FulfillmentPolicyID string `json:"fulfillment_policy_id"`
-	PaymentPolicyID     string `json:"payment_policy_id"`
-	ReturnPolicyID      string `json:"return_policy_id"`
-	LocationKey         string `json:"location_key"`
-	StoreName           string `json:"store_name"`
+	Profiles    []Profile `json:"profiles,omitempty"`
+	Returns30   bool      `json:"returns_30"`
+	LocationKey string    `json:"location_key"`
+	StoreName   string    `json:"store_name"`
 }
 
-// Ready says what's still missing before listing.
-func (s Settings) Missing() []string {
-	var m []string
-	if s.FulfillmentPolicyID == "" {
-		m = append(m, "shipping policy")
+// ProfileList is the seller's profiles, or the starter three.
+func (s Settings) ProfileList() []Profile {
+	if len(s.Profiles) > 0 {
+		return s.Profiles
 	}
-	if s.PaymentPolicyID == "" {
-		m = append(m, "payment policy")
-	}
-	if s.ReturnPolicyID == "" {
-		m = append(m, "return policy")
-	}
-	if s.LocationKey == "" {
-		m = append(m, "ship-from location")
-	}
-	return m
+	return DefaultProfiles()
 }
+
+// Profile picks one by id ("" picks the first).
+func (s Settings) Profile(id string) (Profile, bool) {
+	list := s.ProfileList()
+	for _, p := range list {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	if id == "" && len(list) > 0 {
+		return list[0], true
+	}
+	return Profile{}, false
+}
+
+// Missing says what's still needed before listing.
+func (s Settings) Missing() []string {
+	if s.LocationKey == "" {
+		return []string{"ship-from location"}
+	}
+	return nil
+}
+
+// Policies are the eBay policy ids one listing uses.
+type Policies struct{ Shipping, Payment, Return string }
 
 var (
 	leadingYear = regexp.MustCompile(`^\s*(19|20)\d{2}(\D|$)`)
@@ -166,7 +183,7 @@ func conditionID(cond string) string {
 func graded(c Card) bool { g := str(c.GradingCompany); return g != "" && !strings.EqualFold(g, "raw") }
 
 // Item is the inventory item for the card (EbayListingService.PublishAsync).
-func Item(c Card, edition string, photos []string) map[string]any {
+func Item(c Card, edition string, photos []string, pkg Profile) map[string]any {
 	a := map[string][]string{}
 	set := func(k, v string) {
 		if strings.TrimSpace(v) != "" {
@@ -225,6 +242,9 @@ func Item(c Card, edition string, photos []string) map[string]any {
 		"availability": map[string]any{"shipToLocationAvailability": map[string]int{"quantity": 1}},
 		"product":      map[string]any{"title": Title(c, edition), "imageUrls": photos, "aspects": a},
 	}
+	if pkg.WeightOz > 0 {
+		item["packageWeightAndSize"] = pkg.PackageDetails()
+	}
 	// eBay's trading-card categories take only these two conditions; an
 	// ungraded card also needs its Card Condition (descriptor 40001).
 	if graded(c) {
@@ -264,12 +284,12 @@ func Problems(c Card, o slabs.Options, photos int) []string {
 }
 
 // Offer is the offer for the card's inventory item.
-func Offer(c Card, edition string, o slabs.Options, st Settings, description string) map[string]any {
+func Offer(c Card, edition string, o slabs.Options, st Settings, pol Policies, description string) map[string]any {
 	price := 0.0
 	if c.SalePrice != nil {
 		price = *c.SalePrice
 	}
-	policies := map[string]any{"fulfillmentPolicyId": st.FulfillmentPolicyID, "paymentPolicyId": st.PaymentPolicyID, "returnPolicyId": st.ReturnPolicyID}
+	policies := map[string]any{"fulfillmentPolicyId": pol.Shipping, "paymentPolicyId": pol.Payment, "returnPolicyId": pol.Return}
 	pricing := map[string]any{}
 	offer := map[string]any{
 		"sku": c.Sku, "marketplaceId": Marketplace, "availableQuantity": 1, "categoryId": CategoryID(c, edition),

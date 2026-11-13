@@ -1195,6 +1195,9 @@ func (s *Server) ebayError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusConflict, "ebay_not_connected", "Connect your eBay account on the Account page first.", nil)
 	case errors.Is(err, ebay.ErrReconnect):
 		writeError(w, http.StatusConflict, "ebay_reconnect", "eBay ended the connection. Connect eBay again on the Account page.", nil)
+	case errors.As(err, new(*ebay.APIError)):
+		s.log.Warn("ebay", "err", err)
+		writeError(w, http.StatusBadGateway, "ebay", err.Error(), nil)
 	default:
 		s.log.Warn("ebay", "err", err)
 		writeError(w, http.StatusBadGateway, "ebay", "eBay didn't answer as expected. Try again in a minute.", nil)
@@ -1213,6 +1216,7 @@ func (s *Server) handleEbayStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	missing := []string{}
+	var profiles []ebay.Profile
 	if s.lister != nil {
 		es, err := s.lister.EbaySettings(r.Context(), sess.Account.ID)
 		if err != nil {
@@ -1220,9 +1224,10 @@ func (s *Server) handleEbayStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		missing = append(missing, es.Missing()...)
+		profiles = es.ProfileList()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"configured": st.Configured, "connected": st.Connected, "user": st.User,
-		"connected_at": st.ConnectedAt, "expires_at": st.ExpiresAt, "settings_missing": missing})
+		"connected_at": st.ConnectedAt, "expires_at": st.ExpiresAt, "settings_missing": missing, "profiles": profiles})
 }
 
 func (s *Server) handleEbayConnect(w http.ResponseWriter, r *http.Request) {
@@ -1265,8 +1270,8 @@ func (s *Server) handleEbayCallback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"user": user})
 }
 
-// handleEbaySetup is what the eBay settings need: the seller's business
-// policies and ship-from locations on eBay, and what's picked.
+// handleEbaySetup is what the eBay settings need: the seller's ship-from
+// locations on eBay, the saved settings and the shipping profiles.
 func (s *Server) handleEbaySetup(w http.ResponseWriter, r *http.Request) {
 	sess, _ := currentSession(r)
 	if s.ebay == nil || s.lister == nil {
@@ -1274,11 +1279,6 @@ func (s *Server) handleEbaySetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token, err := s.ebay.AccessToken(r.Context(), sess.Account.ID)
-	if err != nil {
-		s.ebayError(w, r, err)
-		return
-	}
-	ship, pay, ret, err := s.ebay.Policies(r.Context(), token)
 	if err != nil {
 		s.ebayError(w, r, err)
 		return
@@ -1293,7 +1293,8 @@ func (s *Server) handleEbaySetup(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": st, "shipping": ship, "payment": pay, "returns": ret, "locations": locs})
+	st.Profiles = st.ProfileList()
+	writeJSON(w, http.StatusOK, map[string]any{"settings": st, "locations": locs})
 }
 
 func (s *Server) handleEbaySettings(w http.ResponseWriter, r *http.Request) {
@@ -1308,6 +1309,22 @@ func (s *Server) handleEbaySettings(w http.ResponseWriter, r *http.Request) {
 	in.StoreName = strings.TrimSpace(in.StoreName)
 	if len(in.StoreName) > 80 {
 		in.StoreName = in.StoreName[:80]
+	}
+	if len(in.Profiles) > 20 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Keep it to 20 shipping profiles.", nil)
+		return
+	}
+	for i, p := range in.Profiles {
+		if prob := p.Problem(); prob != "" {
+			writeError(w, http.StatusUnprocessableEntity, "invalid", "Shipping profile \""+p.Name+"\": "+prob, nil)
+			return
+		}
+		if p.ID == "" {
+			in.Profiles[i].ID = inventory.NewID()
+		}
+		if in.Profiles[i].CarrierCode == "" {
+			in.Profiles[i].CarrierCode = "USPS"
+		}
 	}
 	sess, _ := currentSession(r)
 	if err := s.lister.SaveEbaySettings(r.Context(), sess.Account.ID, in); err != nil {

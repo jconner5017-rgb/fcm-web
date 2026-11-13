@@ -1618,11 +1618,32 @@ func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/commerce/identity/v1/user/":
 		fmt.Fprint(w, `{"username":"sportscardsforever"}`)
 	case "/sell/account/v1/fulfillment_policy":
+		if r.Method == "POST" {
+			b, _ := io.ReadAll(r.Body)
+			f.calls = append(f.calls, "create fulfillment_policy "+string(b))
+			fmt.Fprint(w, `{"fulfillmentPolicyId":"F-NEW"}`)
+			return
+		}
 		fmt.Fprint(w, `{"fulfillmentPolicies":[{"fulfillmentPolicyId":"F1","name":"PWE $1"}]}`)
 	case "/sell/account/v1/payment_policy":
+		if r.Method == "POST" {
+			b, _ := io.ReadAll(r.Body)
+			f.calls = append(f.calls, "create payment_policy "+string(b))
+			fmt.Fprint(w, `{"paymentPolicyId":"P-NEW"}`)
+			return
+		}
 		fmt.Fprint(w, `{"paymentPolicies":[{"paymentPolicyId":"P1","name":"eBay payments"}]}`)
 	case "/sell/account/v1/return_policy":
+		if r.Method == "POST" {
+			b, _ := io.ReadAll(r.Body)
+			f.calls = append(f.calls, "create return_policy "+string(b))
+			fmt.Fprint(w, `{"returnPolicyId":"R-NEW"}`)
+			return
+		}
 		fmt.Fprint(w, `{"returnPolicies":[{"returnPolicyId":"R1","name":"30 days"}]}`)
+	case "/sell/account/v1/program/opt_in":
+		f.calls = append(f.calls, "opt_in")
+		w.WriteHeader(200)
 	case "/sell/inventory/v1/location":
 		fmt.Fprint(w, `{"locations":[{"merchantLocationKey":"FCM-HOME","name":"Home","location":{"address":{"city":"Tampa","postalCode":"33601"}}}]}`)
 	case "/sell/inventory/v1/offer":
@@ -1781,21 +1802,23 @@ func TestEbayListing(t *testing.T) {
 	st := owner.must(200, "POST", "/v1/ebay/connect", nil)
 	u, _ := url.Parse(st["url"].(string))
 	owner.must(200, "POST", "/v1/ebay/callback", map[string]any{"state": u.Query().Get("state"), "code": "c"})
-	// Connected, but no policies picked.
+	// Connected, but no ship-from location picked.
 	if code, res := owner.do("POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card}}); code != 409 ||
-		!strings.Contains(res["error"].(map[string]any)["message"].(string), "shipping policy") {
-		t.Fatalf("no policies: %d %v", code, res)
+		!strings.Contains(res["error"].(map[string]any)["message"].(string), "ship-from location") {
+		t.Fatalf("no location: %d %v", code, res)
 	}
 	setupRes := owner.must(200, "GET", "/v1/ebay/setup", nil)
-	if setupRes["shipping"].([]any)[0].(map[string]any)["id"] != "F1" || setupRes["locations"].([]any)[0].(map[string]any)["key"] != "FCM-HOME" {
+	profiles := setupRes["settings"].(map[string]any)["profiles"].([]any)
+	if setupRes["locations"].([]any)[0].(map[string]any)["key"] != "FCM-HOME" || len(profiles) != 3 || profiles[0].(map[string]any)["name"] != "Raw" {
 		t.Fatalf("setup: %v", setupRes)
 	}
+	owner.must(422, "PUT", "/v1/ebay/settings", map[string]any{"location_key": "FCM-HOME", "profiles": []map[string]any{{"name": "Bad", "package": "Envelope",
+		"weight_oz": 5, "service_code": "US_eBayStandardEnvelope", "handling_days": 1, "cost": "EbayRate"}}})
 	loc := owner.must(200, "POST", "/v1/ebay/location", map[string]any{"postal_code": "33601"})
 	if loc["key"] != "FCMWEB-33601" {
 		t.Fatalf("location: %v", loc)
 	}
-	owner.must(200, "PUT", "/v1/ebay/settings", map[string]any{"fulfillment_policy_id": "F1", "payment_policy_id": "P1", "return_policy_id": "R1",
-		"location_key": "FCM-HOME", "store_name": "Card Cave"})
+	owner.must(200, "PUT", "/v1/ebay/settings", map[string]any{"location_key": "FCM-HOME", "store_name": "Card Cave"})
 
 	job := owner.must(201, "POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card},
 		"options": map[string]any{"allow_offers": true, "accept_percent": 90, "decline_percent": 60}})
@@ -1820,7 +1843,15 @@ func TestEbayListing(t *testing.T) {
 		t.Fatalf("inventory item: %s", item)
 	}
 	offer := e.ebay.offers[0]
-	for _, want := range []string{`"categoryId":"214"`, `"fulfillmentPolicyId":"F1"`, `"merchantLocationKey":"FCM-HOME"`, `"price":{"currency":"USD","value":"49.99"}`,
+	created := strings.Join(e.ebay.calls, "\n")
+	if !strings.Contains(created, `create fulfillment_policy {"categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],"handlingTime":{"unit":"DAY","value":1},"marketplaceId":"EBAY_US","name":"FireCardManager - Raw - US_eBayStandardEnvelope - 0.78 - 1d"`) ||
+		!strings.Contains(created, `"shippingCost":{"currency":"USD","value":"0.78"}`) || !strings.Contains(created, `"name":"FireCardManager - NoReturns"`) {
+		t.Fatalf("policies: %s", created)
+	}
+	if !strings.Contains(item, `"packageType":"LETTER"`) {
+		t.Fatalf("package: %s", item)
+	}
+	for _, want := range []string{`"categoryId":"214"`, `"fulfillmentPolicyId":"F-NEW"`, `"paymentPolicyId":"P-NEW"`, `"merchantLocationKey":"FCM-HOME"`, `"price":{"currency":"USD","value":"49.99"}`,
 		`"autoAcceptPrice":{"currency":"USD","value":"44.99"}`, `"autoDeclinePrice":{"currency":"USD","value":"29.99"}`, `Card Cave`} {
 		if !strings.Contains(offer, want) {
 			t.Fatalf("offer missing %s: %s", want, offer)

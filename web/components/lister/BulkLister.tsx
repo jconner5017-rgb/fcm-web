@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { send } from "@/lib/client";
+import { profileSummary, type Profile } from "@/components/EbaySettings";
 import { liveText, locationCode, money, setLine, thumbUrl, type CardPage, type CardRow, type TreeSport } from "@/lib/inventory";
 
 type Filter = { sport: string; box: string; status: string; q: string };
@@ -19,13 +20,17 @@ function problems(c: CardRow, auction: boolean): string[] {
   return p;
 }
 
-type EbayState = { on: boolean; connected: boolean; missing: string[] };
+type EbayState = { on: boolean; connected: boolean; missing: string[]; profiles: Profile[] };
 
 export default function BulkLister({ edition, sports, hasKey, ebay, initialIds = [] }: {
   edition: string; sports: TreeSport[]; hasKey: boolean; ebay: EbayState; initialIds?: string[];
 }) {
   const [market, setMarket] = useState<"slabs" | "ebay">("slabs");
   const ebayReady = ebay.on && ebay.connected && ebay.missing.length === 0;
+  const [profile, setProfile] = useState(ebay.profiles[0]?.id ?? "");
+  useEffect(() => {
+    try { const v = localStorage.getItem("fcm-ship-profile"); if (v && ebay.profiles.some((p) => p.id === v)) setProfile(v); } catch {}
+  }, [ebay.profiles]);
   const router = useRouter();
   // Cards sent from the Card Editor arrive picked, with any status shown.
   const [filter, setFilter] = useState<Filter>({ sport: "", box: "", status: initialIds.length ? "" : "Ready", q: "" });
@@ -92,7 +97,9 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
     const options = {
       auction, duration_days: duration, default_start_bid: num(startBid), buy_it_now_at_sale_price: binAtPrice,
       allow_offers: !auction && offers, accept_percent: offers ? num(accept) : null, decline_percent: offers ? num(decline) : null,
+      shipping_profile: market === "ebay" ? profile : undefined,
     };
+    if (market === "ebay") try { localStorage.setItem("fcm-ship-profile", profile); } catch {}
     const body: Record<string, unknown> = { edition, market, options };
     if (allMatching) body.filter = { sport: filter.sport, box: filter.box, status: filter.status, q: filter.q };
     else body.card_ids = [...picked];
@@ -199,6 +206,15 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
               </label>
             </div>
           </div>
+
+          {market === "ebay" && ebay.profiles.length > 0 && (
+            <label className="block text-[13px] font-semibold">Shipping profile
+              <select className="field" value={profile} onChange={(e) => setProfile(e.target.value)}>
+                {ebay.profiles.map((p) => <option key={p.id} value={p.id}>{profileSummary(p)}</option>)}
+              </select>
+              <a href="/account#ebay" className="text-[11px] font-normal text-link">Edit shipping profiles</a>
+            </label>
+          )}
 
           <div>
             <p className="text-[13px] font-semibold">Format</p>

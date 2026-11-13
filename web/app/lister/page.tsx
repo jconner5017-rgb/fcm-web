@@ -4,6 +4,7 @@ import { apiGet, getMe } from "@/lib/api";
 import { when } from "@/lib/client";
 import { href, one, type InvSummary, type TreeSport } from "@/lib/inventory";
 import BulkLister from "@/components/lister/BulkLister";
+import type { Profile } from "@/components/EbaySettings";
 import type { Run } from "@/components/lister/RunProgress";
 
 export const metadata = { title: "Bulk Lister" };
@@ -20,8 +21,8 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
     apiGet<{ keys: { market: string }[] }>("/v1/me/market-keys"),
     apiGet<{ jobs: Run[] }>("/v1/lister/jobs"),
   ]);
-  const eb = (await apiGet<{ configured: boolean; connected: boolean; settings_missing?: string[] }>("/v1/ebay")).data;
-  const ebay = { on: !!eb?.configured, connected: !!eb?.connected, missing: eb?.settings_missing ?? [] };
+  const eb = (await apiGet<{ configured: boolean; connected: boolean; settings_missing?: string[]; profiles?: Profile[] }>("/v1/ebay")).data;
+  const ebay = { on: !!eb?.configured, connected: !!eb?.connected, missing: eb?.settings_missing ?? [], profiles: eb?.profiles ?? [] };
   const ed = tree.data?.edition ?? "sports";
   const hasKey = !!keys.data?.keys.some((k) => k.market === "slabs");
   return (

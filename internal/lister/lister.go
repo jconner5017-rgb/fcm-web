@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
@@ -49,6 +50,7 @@ type Service struct {
 	// PhotoLink is a card photo's hosted link (what eBay copies the photos from).
 	PhotoLink func(photoID string) string
 	Log       *slog.Logger
+	polCache  sync.Map      // eBay policies per account and shipping profile
 	Pause     time.Duration // between cards (be gentle with the marketplace)
 }
 

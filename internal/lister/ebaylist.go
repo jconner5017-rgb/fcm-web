@@ -90,6 +90,14 @@ func (s *Service) listEbay(ctx context.Context, accountID, edition, cardID strin
 	if m := st.Missing(); len(m) > 0 {
 		return "failed", "Pick your eBay " + strings.Join(m, ", ") + " on the Account page."
 	}
+	profile, ok := st.Profile(o.ShippingProfile)
+	if !ok {
+		return "failed", "That shipping profile isn't there any more; pick another in the Bulk Lister."
+	}
+	pol, err := s.ebayPolicies(ctx, accountID, token, profile, st.Returns30)
+	if err != nil {
+		return "failed", "Couldn't set up eBay shipping for profile \"" + profile.Name + "\": " + ebayDescribe(err)
+	}
 	var raw []byte
 	var version int
 	var deleted bool
@@ -116,14 +124,14 @@ func (s *Service) listEbay(ctx context.Context, accountID, edition, cardID strin
 	if p := ebay.Problems(c, o, len(photos)); len(p) > 0 {
 		return "skipped", "Not listed: " + strings.Join(p, ", ") + "."
 	}
-	if err := s.Ebay.PutItem(ctx, token, c.Sku, ebay.Item(c, edition, photos)); err != nil {
+	if err := s.Ebay.PutItem(ctx, token, c.Sku, ebay.Item(c, edition, photos, profile)); err != nil {
 		return "failed", ebayDescribe(err)
 	}
 	front, back := photos[0], ""
 	if len(photos) > 1 {
 		back = photos[1]
 	}
-	offerID, err := s.Ebay.Offer(ctx, token, ebay.Offer(c, edition, o, st, ebay.Description(c, edition, st.StoreName, front, back)))
+	offerID, err := s.Ebay.Offer(ctx, token, ebay.Offer(c, edition, o, st, pol, ebay.Description(c, edition, st.StoreName, front, back)))
 	if err != nil {
 		return "failed", ebayDescribe(err)
 	}
@@ -231,4 +239,31 @@ func (s *Service) PriceEbay(ctx context.Context, accountID, cardID string, price
 		Fields: map[string]json.RawMessage{"sale_price": p, "updated_at": at},
 	}})
 	return err
+}
+
+type polKey struct {
+	account, profile string
+	returns          bool
+	shipping         string // the profile's policy name parts, so an edited profile gets a new policy
+}
+
+type polEntry struct {
+	pol ebay.Policies
+	at  time.Time
+}
+
+// ebayPolicies finds or makes the run's eBay policies; remembered for 15
+// minutes so a run of many cards checks eBay once.
+func (s *Service) ebayPolicies(ctx context.Context, accountID, token string, p ebay.Profile, returns30 bool) (ebay.Policies, error) {
+	k := polKey{accountID, p.ID, returns30, fmt.Sprintf("%s|%s|%s|%.2f|%.2f|%d", p.Name, p.ServiceCode, p.Cost, p.FlatAmount, p.WeightOz, p.HandlingDays)}
+	if v, ok := s.polCache.Load(k); ok && time.Since(v.(polEntry).at) < 15*time.Minute {
+		return v.(polEntry).pol, nil
+	}
+	ship, pay, ret, err := s.Ebay.ResolvePolicies(ctx, token, p, returns30)
+	if err != nil {
+		return ebay.Policies{}, err
+	}
+	pol := ebay.Policies{Shipping: ship, Payment: pay, Return: ret}
+	s.polCache.Store(k, polEntry{pol, time.Now()})
+	return pol, nil
 }

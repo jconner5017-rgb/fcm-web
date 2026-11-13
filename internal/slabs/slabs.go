@@ -219,6 +219,7 @@ type Options struct {
 	AllowOffers         bool     `json:"allow_offers"`
 	AcceptPercent       *int     `json:"accept_percent"`
 	DeclinePercent      *int     `json:"decline_percent"`
+	ShippingProfile     string   `json:"shipping_profile,omitempty"` // eBay: which shipping profile (id)
 }
 
 // Ship are the seller's package defaults from FireCardManager's settings.
