@@ -170,10 +170,23 @@ export default function CardActions({ card }: { card: CardDetail }) {
           <fieldset className="grid gap-3 sm:grid-cols-2">
             <legend className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">Selling</legend>
             <Field label="Status" error={fieldErrors.status}>
-              <select className="field" value={f.status} onChange={set("status")} disabled={live}>
+              <select
+                className="field"
+                value={f.status}
+                onChange={(e) => {
+                  if (e.target.value !== "Sold") return set("status")(e);
+                  // Sold opens the sale form (where it sold, price, date), like FireCardManager's Mark as Sold.
+                  const typed = f.sale_price.replace(/[$,\s]/g, "");
+                  if (typed) setSale((s) => ({ ...s, price: typed }));
+                  setMode("sold");
+                  setError("");
+                  setFieldErrors({});
+                }}
+              >
                 {live && <option value={f.status}>{liveText(d)}</option>}
-                <option value="Ready">Ready to list</option>
-                <option value="NotForSale">Not for sale</option>
+                {!live && <option value="Ready">Ready to list</option>}
+                {!live && <option value="NotForSale">Not for sale</option>}
+                <option value="Sold">Sold...</option>
               </select>
             </Field>
             <Field label="Price" error={fieldErrors.sale_price}>
