@@ -79,7 +79,7 @@ export default async function CardPage({
             <p className="mt-1 text-muted">{setLine(d)}</p>
             {tags.length > 0 && <p className="mt-1 text-[13px] font-semibold text-fire">{tags.join(" · ")}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className={`rounded-full px-3 py-1 text-[12px] font-bold uppercase tracking-wide ${live ? "bg-go text-white" : "border border-line text-muted"}`}>
+              <span className={`whitespace-nowrap rounded-full px-3 py-1 text-[12px] font-bold uppercase tracking-wide ${live ? "bg-go text-white" : "border border-line text-muted"}`}>
                 {live || STATUS_LABELS[d.status ?? ""] || d.status}
               </span>
               {d.ebay_listing_url && (

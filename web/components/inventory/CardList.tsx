@@ -9,7 +9,7 @@ function Status({ c }: { c: CardRow }) {
   const t = statusText(c.data);
   const live = t.startsWith("Live");
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${live ? "bg-go text-white" : "border border-line text-muted"}`}>
+    <span className={`inline-block shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${live ? "bg-go text-white" : "border border-line text-muted"}`}>
       {t}
     </span>
   );
@@ -41,7 +41,7 @@ export function CardTiles({ cards, from }: { cards: CardRow[]; from: string }) {
                 {tags.length > 0 && <p className="mt-1 text-[11px] font-semibold text-fire">{tags.join(" · ")}</p>}
                 <div className="mt-auto pt-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="num font-bold">{money(c.data.sale_price ?? c.data.estimated_value)}</span>
+                    <span className="num min-w-0 truncate font-bold">{money(c.data.sale_price ?? c.data.estimated_value)}</span>
                     <Status c={c} />
                   </div>
                   <p className="mt-1 truncate text-[11px] text-muted">{locationText(c)}</p>
@@ -104,7 +104,7 @@ export function CardTable({ cards, from }: { cards: CardRow[]; from: string }) {
                 <p className="truncate text-[12px] text-muted">{setLine(c.data)}</p>
                 <p className="truncate text-[12px] text-muted">{locationText(c)}</p>
                 <div className="mt-1 flex items-center justify-between gap-2">
-                  <span className="num font-bold">{money(c.data.sale_price ?? c.data.estimated_value)}</span>
+                  <span className="num min-w-0 truncate font-bold">{money(c.data.sale_price ?? c.data.estimated_value)}</span>
                   <Status c={c} />
                 </div>
               </div>
