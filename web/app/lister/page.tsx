@@ -27,7 +27,7 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[26px] font-bold">Bulk Lister</h1>
-          <p className="text-[14px] text-muted">Put many cards up for sale at once. Exports (Shopify, Whatnot, CSV) stay in FireCardManager on your PC.</p>
+          <p className="text-[14px] text-muted">Put many cards up for sale at once. For Shopify, Whatnot and CSV files, use Import/Export on a computer.</p>
         </div>
         {sum.data && sum.data.editions.length > 1 && (
           <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">

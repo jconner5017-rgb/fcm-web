@@ -63,6 +63,7 @@ type fakeSlabs struct {
 	listings []map[string]any
 	auth     string
 	shipped  []string
+	changes  []string
 }
 
 func (f *fakeSlabs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +77,19 @@ func (f *fakeSlabs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&in)
 		f.listings = append(f.listings, in)
 		fmt.Fprintf(w, `{"listing":{"id":"lst-%d","external_id":%q,"status":"active"},"created":true}`, len(f.listings), in["external_id"])
+	case "/v1/seller/listings/sync":
+		fmt.Fprint(w, `{"listings":[{"external_id":"FCM-5","id":"lst-5","status":"active","price_cents":1299,"format":"fixed","updated_at":"2026-11-13T10:00:00Z"}]}`)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/v1/listings/") && (r.Method == "PATCH" || r.Method == "DELETE") {
+			b, _ := io.ReadAll(r.Body)
+			f.changes = append(f.changes, r.Method+" "+strings.TrimPrefix(r.URL.Path, "/v1/listings/")+" "+string(b))
+			if r.Method == "DELETE" {
+				w.WriteHeader(204)
+				return
+			}
+			fmt.Fprint(w, `{"listing":{"id":"lst-5"}}`)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/orders/") && strings.HasSuffix(r.URL.Path, "/ship") {
 			var in map[string]any
 			json.NewDecoder(r.Body).Decode(&in)
@@ -1507,5 +1520,50 @@ func TestSoldLogEdits(t *testing.T) {
 	all := owner.must(200, "GET", "/v1/inventory/sold?all=1", nil)
 	if all["total"].(float64) != 3 {
 		t.Fatalf("after delete: %v", all["total"])
+	}
+}
+
+func TestLiveListings(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("live@example.com")
+	pc := e.link(owner, "sports", "HWID-LV", "")
+	now := time.Now()
+	push(t, pc,
+		ch("card", uuid(981), 0, now, map[string]any{"player_name": "On S&S", "sku": "FCM-5", "status": "Ready", "sale_price": 12.99, "marketplace_listing_id": "lst-5"}),
+		ch("card", uuid(982), 0, now, map[string]any{"player_name": "On eBay", "sku": "FCM-6", "status": "EBF", "ebay_listing_id": "1234"}),
+		ch("card", uuid(983), 0, now, map[string]any{"player_name": "Not live", "sku": "FCM-7", "status": "Ready"}))
+
+	// Without a web key: the synced listings, no S&S check.
+	l := owner.must(200, "GET", "/v1/live", nil)
+	if len(l["cards"].([]any)) != 2 || l["slabs_checked"] != false {
+		t.Fatalf("live: %v", l)
+	}
+	owner.must(409, "POST", "/v1/live/slabs/end", map[string]any{"card_ids": []string{uuid(981)}})
+
+	owner.must(200, "PUT", "/v1/me/market-keys/slabs", map[string]any{"key": "ss_live_0123456789abcdefWXYZ"})
+	l = owner.must(200, "GET", "/v1/live", nil)
+	var ss map[string]any
+	for _, c := range l["cards"].([]any) {
+		if m := c.(map[string]any); m["id"] == uuid(981) {
+			ss, _ = m["slabs"].(map[string]any)
+		}
+	}
+	if l["slabs_checked"] != true || ss == nil || ss["price_cents"].(float64) != 1299 {
+		t.Fatalf("with key: %v", l)
+	}
+
+	owner.must(204, "POST", "/v1/live/slabs/price", map[string]any{"card_id": uuid(981), "price": 15})
+	c := owner.must(200, "GET", "/v1/inventory/cards/"+uuid(981), nil)
+	if c["data"].(map[string]any)["sale_price"].(float64) != 15 || len(e.slabs.changes) != 1 || e.slabs.changes[0] != `PATCH FCM-5 {"price_cents":1500}` {
+		t.Fatalf("price: %v %v", c["data"], e.slabs.changes)
+	}
+
+	end := owner.must(200, "POST", "/v1/live/slabs/end", map[string]any{"card_ids": []string{uuid(981)}})
+	c = owner.must(200, "GET", "/v1/inventory/cards/"+uuid(981), nil)
+	if end["ended"].(float64) != 1 || c["data"].(map[string]any)["marketplace_listing_id"] != nil || !strings.HasPrefix(e.slabs.changes[1], "DELETE FCM-5") {
+		t.Fatalf("end: %v %v %v", end, c["data"], e.slabs.changes)
+	}
+	if l := owner.must(200, "GET", "/v1/live", nil); len(l["cards"].([]any)) != 1 {
+		t.Fatalf("after end: %v", l)
 	}
 }

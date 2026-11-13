@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -131,6 +132,41 @@ func (c *Client) Upsert(ctx context.Context, key string, in Input, idem string) 
 func (c *Client) MarkShipped(ctx context.Context, key, orderID, carrier, tracking string) error {
 	body, _ := json.Marshal(map[string]string{"carrier": carrier, "tracking_number": tracking})
 	return c.send(ctx, key, http.MethodPost, "/v1/orders/"+url.PathEscape(orderID)+"/ship", "application/json", body, "", nil)
+}
+
+// SyncItem is one of the seller's listings as the app checks them.
+type SyncItem struct {
+	ExternalID string    `json:"external_id"`
+	ID         string    `json:"id"`
+	Status     string    `json:"status"`
+	PriceCents int       `json:"price_cents"` // for an auction, the current bid
+	Format     string    `json:"format"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// Listings returns every listing the seller made from the app (by SKU).
+func (c *Client) Listings(ctx context.Context, key string) ([]SyncItem, error) {
+	var out struct {
+		Listings []SyncItem `json:"listings"`
+	}
+	err := c.send(ctx, key, http.MethodGet, "/v1/seller/listings/sync", "", nil, "", &out)
+	return out.Listings, err
+}
+
+// SetPrice changes a fixed-price listing's price.
+func (c *Client) SetPrice(ctx context.Context, key, sku string, cents int) error {
+	body, _ := json.Marshal(map[string]int{"price_cents": cents})
+	return c.send(ctx, key, http.MethodPatch, "/v1/listings/"+url.PathEscape(sku), "application/json", body, "", nil)
+}
+
+// End takes a listing down (404 counts as already gone).
+func (c *Client) End(ctx context.Context, key, sku string) error {
+	err := c.send(ctx, key, http.MethodDelete, "/v1/listings/"+url.PathEscape(sku), "", nil, "", nil)
+	var api *APIError
+	if errors.As(err, &api) && api.Status == 404 {
+		return nil
+	}
+	return err
 }
 
 // ---------------- the listing (SlabsListingInput) ----------------

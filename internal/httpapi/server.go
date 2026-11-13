@@ -128,6 +128,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /v1/inventory/sold/{id}", requireAccount(s.handleSoldEdit))
 	mux.HandleFunc("DELETE /v1/inventory/sold/{id}", requireAccount(s.handleSoldDelete))
 	mux.HandleFunc("POST /v1/inventory/sold/shipped", requireAccount(s.handleSoldShipped))
+	mux.HandleFunc("GET /v1/live", requireAccount(s.handleLive))
+	mux.HandleFunc("POST /v1/live/slabs/end", requireAccount(s.handleLiveSlabsEnd))
+	mux.HandleFunc("POST /v1/live/slabs/price", requireAccount(s.handleLiveSlabsPrice))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
 	mux.HandleFunc("GET /v1/inventory/tree", requireAccount(s.handleInvTree))
 	mux.HandleFunc("GET /v1/inventory/dashboard", requireAccount(s.handleInvDashboard))
@@ -1096,6 +1099,90 @@ func (s *Server) handleSoldShipped(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"marked": res.Marked, "slabs_orders": len(res.SlabsOrders), "problems": problems})
+}
+
+// ---------------- Live Listings ----------------
+
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	out, err := s.lister.Live(r.Context(), sess.Account.ID, ed)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "cards": out.Cards, "slabs_checked": out.SlabsChecked, "slabs_problem": out.SlabsProblem})
+}
+
+func (s *Server) liveKeyError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if errors.Is(err, lister.ErrNoKey) {
+		writeError(w, http.StatusConflict, "no_key", "Add a Slabs & Singles key made for FireCardManager Web on the Account page first.", nil)
+		return true
+	}
+	var pe *lister.PriceError
+	if errors.As(err, &pe) {
+		writeError(w, http.StatusBadGateway, "slabs", pe.Msg, nil)
+		return true
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "That card isn't in your online inventory.", nil)
+		return true
+	}
+	return false
+}
+
+func (s *Server) handleLiveSlabsEnd(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		CardIDs []string `json:"card_ids"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.CardIDs) == 0 || len(in.CardIDs) > 500 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Pick the listings to end (up to 500).", nil)
+		return
+	}
+	sess, _ := currentSession(r)
+	n, problems, err := s.lister.EndSlabs(r.Context(), sess.Account.ID, in.CardIDs)
+	if err != nil {
+		if !s.liveKeyError(w, r, err) {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ended": n, "problems": problems})
+}
+
+func (s *Server) handleLiveSlabsPrice(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		CardID string  `json:"card_id"`
+		Price  float64 `json:"price"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Price < 0.5 || in.Price > 1_000_000 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Enter a price of at least $0.50.", map[string]string{"price": "Too low."})
+		return
+	}
+	sess, _ := currentSession(r)
+	if err := s.lister.PriceSlabs(r.Context(), sess.Account.ID, in.CardID, in.Price); err != nil {
+		if !s.liveKeyError(w, r, err) {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // invWriteAllowed: edits from the website are sync, so they need the trial
