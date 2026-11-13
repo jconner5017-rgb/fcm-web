@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+/* FireCardManager colours: the desktop app's dark navy, its fire orange,
+   and the green of its "New Box" button. Dark is the default, like the
+   desktop app; the header switch flips to light. */
+@theme {
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+
+  --color-paper: #ffffff;
+  --color-wash: #f2f4f7;
+  --color-line: #d9dee5;
+  --color-ink: #18202b;
+  --color-muted: #5b6573;
+  --color-fire: #e2531b;
+  --color-fire-dark: #c2410c;
+  --color-go: #15803d;
+  --color-link: #1d4ed8;
+  --color-bad: #c81e1e;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-paper: #1b1e2b;
+  --color-wash: #232738;
+  --color-line: #33384d;
+  --color-ink: #eceef5;
+  --color-muted: #a3aac0;
+  --color-fire: #f26b2f;
+  --color-fire-dark: #ff8a50;
+  --color-go: #34c26b;
+  --color-link: #8fb4ff;
+  --color-bad: #ff6b6b;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+@layer components {
+.num { font-variant-numeric: tabular-nums; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+  border-radius: 9999px; padding: .55rem 1.1rem; font-weight: 600;
+  background: var(--color-fire); color: #fff;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+  border-radius: 9999px; padding: .5rem 1rem; font-weight: 600;
+  border: 1px solid var(--color-line);
+}
+.btn-ghost:hover { border-color: var(--color-ink); }
+.field {
+  margin-top: .25rem; width: 100%; border-radius: .5rem; border: 1px solid var(--color-line);
+  background: var(--color-paper); padding: .55rem .75rem;
+}
+.field:focus { outline: 2px solid var(--color-fire); outline-offset: 1px; }
+.card {
+  border-radius: .75rem; border: 1px solid var(--color-line); background: var(--color-wash); padding: 1.25rem;
+}
+}
+
+.vet-light { display: block; }
+.vet-dark { display: none; }
+:root[data-theme="dark"] .vet-light { display: none; }
+:root[data-theme="dark"] .vet-dark { display: block; }

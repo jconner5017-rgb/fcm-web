@@ -1,0 +1,81 @@
+"use client";
+
+import { useState } from "react";
+import { send, shortDate, when } from "@/lib/client";
+import type { AdminAccount } from "@/lib/types";
+
+export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) {
+  const [rows, setRows] = useState(initial);
+  const [msg, setMsg] = useState("");
+
+  async function addon(a: AdminAccount, on: boolean) {
+    const note = on ? prompt(`Turn on the web add-on for ${a.email}?\nNote (order number, amount):`, a.web_addon_note ?? "") : "";
+    if (on && note === null) return;
+    if (!on && !confirm(`Turn off the web add-on for ${a.email}? Sync stops unless their trial is still running.`)) return;
+    const r = await send("POST", `/v1/admin/accounts/${a.id}/addon`, { on, note: note ?? "" });
+    if (!r.ok) return setMsg(r.message);
+    setRows(rows.map((x) => (x.id === a.id ? { ...x, web_addon_at: on ? new Date().toISOString() : undefined, web_addon_note: note ?? "" } : x)));
+    setMsg(`Web add-on ${on ? "on" : "off"} for ${a.email}.`);
+  }
+
+  async function trial(a: AdminAccount) {
+    const d = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
+    const until = prompt(`Extend ${a.email}'s sync trial until (YYYY-MM-DD):`, d);
+    if (!until) return;
+    const r = await send("POST", `/v1/admin/accounts/${a.id}/trial`, { until });
+    if (!r.ok) return setMsg(r.message);
+    setRows(rows.map((x) => (x.id === a.id ? { ...x, sync_trial_ends_at: until + "T23:59:59Z" } : x)));
+    setMsg(`Trial for ${a.email} now runs until ${until}.`);
+  }
+
+  if (rows.length === 0) return <p className="card mt-6">No accounts found.</p>;
+  return (
+    <>
+      {msg && <p role="status" className="mt-4">{msg}</p>}
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full min-w-[860px] text-left text-[14px]">
+          <thead className="border-b border-line text-muted">
+            <tr>
+              <th className="py-2 pr-3">Email</th>
+              <th className="py-2 pr-3">Joined</th>
+              <th className="py-2 pr-3">Sync</th>
+              <th className="py-2 pr-3 text-right">PCs</th>
+              <th className="py-2 pr-3 text-right">Cards</th>
+              <th className="py-2 pr-3">Last sync</th>
+              <th className="py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((a) => {
+              const trialOn = new Date(a.sync_trial_ends_at).getTime() > Date.now();
+              return (
+                <tr key={a.id}>
+                  <td className="py-2 pr-3">
+                    <b>{a.email}</b>{a.is_admin && <span className="ml-1 text-fire">admin</span>}
+                    {a.web_addon_note && <span className="block text-[12px] text-muted">{a.web_addon_note}</span>}
+                  </td>
+                  <td className="py-2 pr-3">{shortDate(a.created_at)}</td>
+                  <td className="py-2 pr-3">
+                    {a.web_addon_at ? <span className="font-semibold text-go">Add-on</span>
+                      : trialOn ? `Trial to ${shortDate(a.sync_trial_ends_at)}` : <span className="text-bad">Trial ended</span>}
+                  </td>
+                  <td className="num py-2 pr-3 text-right">{a.devices}</td>
+                  <td className="num py-2 pr-3 text-right">{a.cards.toLocaleString()}</td>
+                  <td className="py-2 pr-3">{when(a.last_sync)}</td>
+                  <td className="py-2 text-right whitespace-nowrap">
+                    {a.web_addon_at ? (
+                      <button type="button" onClick={() => addon(a, false)} className="btn-ghost !px-3 !py-1 text-[13px]">Remove add-on</button>
+                    ) : (
+                      <button type="button" onClick={() => addon(a, true)} className="btn !px-3 !py-1 text-[13px]">Add-on paid</button>
+                    )}
+                    <button type="button" onClick={() => trial(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">Extend trial</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}

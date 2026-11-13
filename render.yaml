@@ -1,0 +1,58 @@
+# Render Blueprint: FCM Web staging (app-staging.firecardmanager.com).
+# Kept apart from the Slabs & Singles services so neither can take the
+# other down. Render redeploys on every push to main.
+services:
+  - type: web
+    name: fcm-api
+    runtime: docker
+    plan: starter            # about $7/mo
+    region: virginia
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: staging
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      - key: WEB_URL
+        value: https://app-staging.firecardmanager.com
+      - key: MFA_ENCRYPTION_KEY
+        generateValue: true  # random 256-bit key; never commit one
+      - key: ADMIN_EMAILS
+        sync: false          # your email, entered in the dashboard
+      - key: EMAIL_PROVIDER
+        sync: false          # postmark, resend or mailjet (optional at first)
+      - key: EMAIL_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: FireCardManager <no-reply@firecardmanager.com>
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fcm-db
+          property: connectionString
+
+  - type: web
+    name: fcm-web
+    runtime: docker
+    plan: starter            # about $7/mo
+    region: virginia
+    branch: main
+    autoDeploy: true
+    dockerfilePath: ./web/Dockerfile
+    dockerContext: ./web
+    envVars:
+      - key: API_URL         # the API over Render's private network
+        fromService:
+          name: fcm-api
+          type: web
+          property: hostport
+
+databases:
+  - name: fcm-db
+    databaseName: fcmweb
+    user: fcmweb
+    plan: basic-256mb        # about $6/mo + storage
+    region: virginia
+    postgresMajorVersion: "16"
+    ipAllowList: []          # only Render services can connect
