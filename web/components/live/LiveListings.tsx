@@ -9,6 +9,9 @@ type Slabs = { id: string; status: string; price_cents: number; format: string; 
 type Live = { id: string; box_name?: string; data: CardData; slabs?: Slabs };
 type Res = { edition: string; cards: Live[]; slabs_checked: boolean; slabs_problem?: string };
 
+type Orphan = { sku: string; title: string; listing_id: string; format: string; price: number };
+type Refresh = { live: number; matched: number; marked_live: number; price_changes: { sku: string; name: string; old: number | null; new: number }[]; orphans: Orphan[]; not_live: string[] };
+
 const onEbay = (d: CardData) => d.status === "EBA" || d.status === "EBF";
 const onSlabs = (d: CardData) => !!d.marketplace_listing_id;
 
@@ -19,6 +22,25 @@ export default function LiveListings({ edition, hasKey, ebayOn }: { edition: str
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
+  const [pulled, setPulled] = useState<Refresh | null>(null);
+
+  // Like FireCardManager's Live Listings refresh: pull every live listing from
+  // eBay, mark the matching cards live and copy prices changed on eBay.
+  async function pullEbay() {
+    setBusy(true);
+    setMsg({ text: "Checking your eBay listings..." });
+    const r = await send<Refresh>("POST", "/v1/live/ebay/refresh");
+    setBusy(false);
+    if (!r.ok) return setMsg({ text: r.message, bad: true });
+    const d = r.data;
+    setPulled(d);
+    const parts = [`eBay reports ${d.live} live listing${d.live === 1 ? "" : "s"}; ${d.matched} match cards here.`];
+    if (d.marked_live) parts.push(`${d.marked_live} card${d.marked_live === 1 ? " was" : "s were"} marked live.`);
+    if (d.price_changes.length) parts.push(`${d.price_changes.length} price${d.price_changes.length === 1 ? "" : "s"} updated from eBay.`);
+    if (d.orphans.length) parts.push(`${d.orphans.length} aren't in this inventory (listed below).`);
+    setMsg({ text: parts.join(" ") });
+    load();
+  }
 
   const load = useCallback(async () => {
     const r = await send<Res>("GET", "/v1/live?edition=" + edition);
@@ -100,6 +122,7 @@ export default function LiveListings({ edition, hasKey, ebayOn }: { edition: str
         </div>
         <input className="field !mt-0 min-w-[180px] flex-1 !py-1.5" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, set, SKU..." />
         <button type="button" className="btn-ghost !py-1.5" disabled={busy} onClick={() => { setMsg(null); load(); }}>Refresh</button>
+        {ebayOn && <button type="button" className="btn !py-1.5" disabled={busy} onClick={pullEbay}>Refresh from eBay</button>}
       </div>
 
       {res && !res.slabs_checked && slabsCount > 0 && (
@@ -204,6 +227,37 @@ export default function LiveListings({ edition, hasKey, ebayOn }: { edition: str
           </tbody>
         </table>
       </div>
+
+      {pulled && (pulled.orphans.length > 0 || pulled.not_live.length > 0 || pulled.price_changes.length > 0) && (
+        <div className="space-y-2 rounded-lg border border-line px-3 py-2 text-[13px]">
+          {pulled.price_changes.length > 0 && (
+            <div>
+              <p className="font-semibold">Prices changed on eBay</p>
+              <ul className="text-muted">{pulled.price_changes.map((p) => (
+                <li key={p.sku}>{p.sku} {p.name}: {p.old == null ? "no price" : money(p.old)} → {money(p.new)}</li>
+              ))}</ul>
+            </div>
+          )}
+          {pulled.orphans.length > 0 && (
+            <div>
+              <p className="font-semibold">Live on eBay, not in this inventory</p>
+              <p className="text-muted">Their SKU doesn&apos;t match a card here (listed on eBay outside FireCardManager, or the card was deleted here).</p>
+              <ul>{pulled.orphans.map((o) => (
+                <li key={o.listing_id}>
+                  <a className="font-semibold text-link" href={`https://www.ebay.com/itm/${o.listing_id}`} target="_blank" rel="noreferrer">{o.title || o.sku}</a>
+                  <span className="text-muted"> · {o.sku} · {o.format === "AUCTION" ? "Auction" : "Buy It Now"} · {money(o.price)}</span>
+                </li>
+              ))}</ul>
+            </div>
+          )}
+          {pulled.not_live.length > 0 && (
+            <div>
+              <p className="font-semibold">Marked live here, but not live on eBay</p>
+              <p className="text-muted">They may have sold, ended or been listed outside the API. Check them on eBay: {pulled.not_live.join(", ")}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/live/slabs/end", requireAccount(s.handleLiveSlabsEnd))
 	mux.HandleFunc("POST /v1/live/slabs/price", requireAccount(s.handleLiveSlabsPrice))
 	mux.HandleFunc("POST /v1/live/ebay/end", requireAccount(s.handleLiveEbayEnd))
+	mux.HandleFunc("POST /v1/live/ebay/refresh", requireAccount(s.handleLiveEbayRefresh))
 	mux.HandleFunc("POST /v1/live/ebay/price", requireAccount(s.handleLiveEbayPrice))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
 	mux.HandleFunc("GET /v1/inventory/tree", requireAccount(s.handleInvTree))
@@ -1464,6 +1465,21 @@ func (s *Server) handleLiveEbayEnd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ended": n, "problems": problems})
+}
+
+// handleLiveEbayRefresh pulls every live listing from the seller's eBay
+// account and marks the matching cards live (Live Listings > Refresh from eBay).
+func (s *Server) handleLiveEbayRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	sess, _ := currentSession(r)
+	res, err := s.lister.RefreshEbay(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleLiveEbayPrice(w http.ResponseWriter, r *http.Request) {

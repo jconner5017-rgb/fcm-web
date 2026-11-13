@@ -19,6 +19,7 @@ type Card struct {
 	SlotNumber     *int     `json:"slot_number"`
 	EbayOfferID    *string  `json:"ebay_offer_id"`
 	EbayListingID  *string  `json:"ebay_listing_id"`
+	EbayListingURL *string  `json:"ebay_listing_url"`
 }
 
 // Settings are the seller's eBay choices on the website (Account > eBay):

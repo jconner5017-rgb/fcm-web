@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // Marketplace is the eBay site listings go on (FireCardManager lists on eBay US).
@@ -439,4 +440,101 @@ func (s *Service) ResolvePolicies(ctx context.Context, token string, p Profile, 
 			"shippingOptions": []map[string]any{{"optionType": "DOMESTIC", "costType": costType, "shippingServices": []map[string]any{svc}}}})
 	}
 	return
+}
+
+// LiveOffer is a published offer (a live listing) on eBay.
+type LiveOffer struct {
+	SKU       string  `json:"sku"`
+	Title     string  `json:"title"`
+	OfferID   string  `json:"offer_id"`
+	ListingID string  `json:"listing_id"`
+	Format    string  `json:"format"` // FIXED_PRICE or AUCTION
+	Price     float64 `json:"price"`
+	ImageURL  string  `json:"image_url,omitempty"`
+}
+
+// LiveOffers reads every inventory item on the seller's eBay account and
+// returns the ones with a live listing (GetLiveListingsFromEbayAsync).
+func (s *Service) LiveOffers(ctx context.Context, token string) ([]LiveOffer, error) {
+	type item struct{ sku, title, image string }
+	var items []item
+	for offset := 0; ; offset += 200 {
+		var page struct {
+			Total int `json:"total"`
+			Items []struct {
+				SKU     string `json:"sku"`
+				Product struct {
+					Title     string   `json:"title"`
+					ImageURLs []string `json:"imageUrls"`
+				} `json:"product"`
+			} `json:"inventoryItems"`
+		}
+		if err := s.call(ctx, token, http.MethodGet, fmt.Sprintf("/sell/inventory/v1/inventory_item?limit=200&offset=%d", offset), nil, &page); err != nil {
+			return nil, err
+		}
+		for _, it := range page.Items {
+			img := ""
+			if len(it.Product.ImageURLs) > 0 {
+				img = it.Product.ImageURLs[0]
+			}
+			if it.SKU != "" {
+				items = append(items, item{it.SKU, it.Product.Title, img})
+			}
+		}
+		if len(page.Items) == 0 || offset+200 >= page.Total || offset > 20000 {
+			break
+		}
+	}
+	var (
+		mu   sync.Mutex
+		out  []LiveOffer
+		ferr error
+		wg   sync.WaitGroup
+	)
+	gate := make(chan struct{}, 6)
+	for _, it := range items {
+		wg.Add(1)
+		gate <- struct{}{}
+		go func(it item) {
+			defer wg.Done()
+			defer func() { <-gate }()
+			var res struct {
+				Offers []struct {
+					OfferID string `json:"offerId"`
+					Format  string `json:"format"`
+					Status  string `json:"status"`
+					Listing struct {
+						ListingID string `json:"listingId"`
+					} `json:"listing"`
+					Pricing struct {
+						Price struct {
+							Value string `json:"value"`
+						} `json:"price"`
+					} `json:"pricingSummary"`
+				} `json:"offers"`
+			}
+			err := s.call(ctx, token, http.MethodGet, "/sell/inventory/v1/offer?sku="+url.QueryEscape(it.sku), nil, &res)
+			if e, ok := err.(*APIError); ok && e.Status == 404 {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if ferr == nil {
+					ferr = err
+				}
+				return
+			}
+			for _, o := range res.Offers {
+				if !strings.EqualFold(o.Status, "PUBLISHED") || o.Listing.ListingID == "" {
+					continue
+				}
+				var p float64
+				fmt.Sscanf(o.Pricing.Price.Value, "%f", &p)
+				out = append(out, LiveOffer{SKU: it.sku, Title: it.title, OfferID: o.OfferID, ListingID: o.Listing.ListingID, Format: o.Format, Price: p, ImageURL: it.image})
+			}
+		}(it)
+	}
+	wg.Wait()
+	return out, ferr
 }

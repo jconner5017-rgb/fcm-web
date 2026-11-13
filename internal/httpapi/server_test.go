@@ -1595,6 +1595,7 @@ type fakeEbay struct {
 	offers   []string
 	items    []string
 	calls    []string
+	live     map[string]string // sku -> offers JSON for GET offer?sku=
 }
 
 func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1648,7 +1649,22 @@ func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	case "/sell/inventory/v1/location":
 		fmt.Fprint(w, `{"locations":[{"merchantLocationKey":"FCM-HOME","name":"Home","location":{"address":{"city":"Tampa","postalCode":"33601"}}}]}`)
+	case "/sell/inventory/v1/inventory_item":
+		var items []string
+		for sku := range f.live {
+			items = append(items, fmt.Sprintf(`{"sku":%q,"product":{"title":"Title %s"}}`, sku, sku))
+		}
+		fmt.Fprintf(w, `{"total":%d,"inventoryItems":[%s]}`, len(items), strings.Join(items, ","))
 	case "/sell/inventory/v1/offer":
+		if r.Method == "GET" {
+			o, ok := f.live[r.URL.Query().Get("sku")]
+			if !ok {
+				w.WriteHeader(404)
+				return
+			}
+			fmt.Fprint(w, o)
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		f.offers = append(f.offers, string(b))
 		if len(f.offers) > 1 {
@@ -1910,5 +1926,43 @@ func TestEbayListing(t *testing.T) {
 	if end["ended"].(float64) != 1 || c["status"] != "Ready" || c["ebay_listing_id"] != nil || c["sale_price"].(float64) != 45 ||
 		!strings.HasSuffix(e.ebay.calls[len(e.ebay.calls)-1], "/offer/OFF-1/withdraw") {
 		t.Fatalf("end: %v %v %v", end, c, e.ebay.calls)
+	}
+}
+
+func TestEbayRefresh(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("refresh-ebay@example.com")
+	pc := e.link(owner, "sports", "HWID-ER", "")
+	gunnar, dirk, gone := uuid(995), uuid(996), uuid(997)
+	push(t, pc, ch("card", gunnar, 0, time.Now(), map[string]any{"sku": "FCM-1622", "player_name": "Gunnar Henderson", "sale_price": 10.0, "status": "Ready"}))
+	push(t, pc, ch("card", dirk, 0, time.Now(), map[string]any{"sku": "FCM-1348", "player_name": "Dirk Nowitzki", "sale_price": 5.0, "status": "EBF"}))
+	push(t, pc, ch("card", gone, 0, time.Now(), map[string]any{"sku": "FCM-9", "player_name": "Ended", "status": "EBF"}))
+	st := owner.must(200, "POST", "/v1/ebay/connect", nil)
+	u, _ := url.Parse(st["url"].(string))
+	owner.must(200, "POST", "/v1/ebay/callback", map[string]any{"state": u.Query().Get("state"), "code": "c"})
+	e.ebay.mu.Lock()
+	e.ebay.live = map[string]string{
+		"FCM-1622": `{"offers":[{"offerId":"356863439011","format":"FIXED_PRICE","status":"PUBLISHED","listing":{"listingId":"198792938718"},"pricingSummary":{"price":{"value":"12.50"}}}]}`,
+		"FCM-1348": `{"offers":[{"offerId":"O2","format":"FIXED_PRICE","status":"PUBLISHED","listing":{"listingId":"198792955798"},"pricingSummary":{"price":{"value":"5.00"}}}]}`,
+		"OTHER-1":  `{"offers":[{"offerId":"O3","format":"AUCTION","status":"PUBLISHED","listing":{"listingId":"111"},"pricingSummary":{"price":{"value":"1.00"}}}]}`,
+		"UNPUB-1":  `{"offers":[{"offerId":"O4","format":"FIXED_PRICE","status":"UNPUBLISHED"}]}`,
+	}
+	e.ebay.mu.Unlock()
+	res := owner.must(200, "POST", "/v1/live/ebay/refresh", nil)
+	if res["live"].(float64) != 3 || res["matched"].(float64) != 2 || res["marked_live"].(float64) != 1 ||
+		len(res["orphans"].([]any)) != 1 || res["orphans"].([]any)[0].(map[string]any)["sku"] != "OTHER-1" ||
+		len(res["price_changes"].([]any)) != 1 || fmt.Sprint(res["not_live"]) != "[FCM-9]" {
+		t.Fatalf("refresh: %v", res)
+	}
+	c := owner.must(200, "GET", "/v1/inventory/cards/"+gunnar, nil)["data"].(map[string]any)
+	if c["status"] != "EBF" || c["ebay_offer_id"] != "356863439011" || c["ebay_listing_url"] != "https://www.ebay.com/itm/198792938718" || c["sale_price"].(float64) != 12.5 {
+		t.Fatalf("gunnar: %v", c)
+	}
+	// A newer price set in the app isn't overwritten while eBay's is unchanged.
+	ver := owner.must(200, "GET", "/v1/inventory/cards/"+gunnar, nil)["version"]
+	owner.must(200, "PATCH", "/v1/inventory/cards/"+gunnar, map[string]any{"base_version": ver, "fields": map[string]any{"sale_price": 11}})
+	res = owner.must(200, "POST", "/v1/live/ebay/refresh", nil)
+	if len(res["price_changes"].([]any)) != 0 || res["marked_live"].(float64) != 0 {
+		t.Fatalf("second refresh: %v", res)
 	}
 }
