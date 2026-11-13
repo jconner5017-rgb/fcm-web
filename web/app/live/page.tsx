@@ -14,6 +14,7 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
     apiGet<InvSummary>(href("/v1/inventory/summary", { edition })),
     apiGet<{ keys: { market: string }[] }>("/v1/me/market-keys"),
   ]);
+  const eb = (await apiGet<{ connected: boolean }>("/v1/ebay")).data;
   if (!sum.data) return <p className="card mt-8">Your listings couldn&apos;t be loaded just now. Refresh the page in a minute.</p>;
   const ed = sum.data.edition;
   return (
@@ -35,7 +36,7 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
           <Link href="/lister" className="btn !py-1.5">Bulk Lister</Link>
         </div>
       </div>
-      <LiveListings key={ed} edition={ed} hasKey={!!keys.data?.keys.some((k) => k.market === "slabs")} />
+      <LiveListings key={ed} edition={ed} hasKey={!!keys.data?.keys.some((k) => k.market === "slabs")} ebayOn={!!eb?.connected} />
     </div>
   );
 }

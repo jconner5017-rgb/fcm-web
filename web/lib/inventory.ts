@@ -23,6 +23,7 @@ export type CardData = {
   allow_offers?: boolean;
   ebay_listing_url?: string | null;
   ebay_listing_id?: string | null;
+  ebay_offer_id?: string | null;
   marketplace_listing_id?: string | null;
   marketplace_listed_at?: string | null;
   is_rookie?: boolean;

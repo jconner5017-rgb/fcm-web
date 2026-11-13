@@ -1647,6 +1647,13 @@ func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			b, _ := io.ReadAll(r.Body)
 			f.calls = append(f.calls, "update "+strings.TrimPrefix(r.URL.Path, "/sell/inventory/v1/offer/")+" "+string(b))
 			w.WriteHeader(204)
+		case r.URL.Path == "/sell/inventory/v1/bulk_update_price_quantity":
+			b, _ := io.ReadAll(r.Body)
+			f.calls = append(f.calls, "price "+string(b))
+			fmt.Fprint(w, `{"responses":[{"statusCode":200}]}`)
+		case strings.HasSuffix(r.URL.Path, "/withdraw"):
+			f.calls = append(f.calls, "withdraw "+r.URL.Path)
+			fmt.Fprint(w, `{"listingId":"387000111"}`)
 		case strings.HasSuffix(r.URL.Path, "/publish"):
 			f.calls = append(f.calls, "publish "+r.URL.Path)
 			fmt.Fprint(w, `{"listingId":"387000111"}`)
@@ -1835,5 +1842,17 @@ func TestEbayListing(t *testing.T) {
 	got = owner.must(200, "GET", "/v1/lister/jobs/"+job["id"].(string), nil)
 	if s := got["items"].([]any)[0].(map[string]any)["status"]; s != "updated" || !strings.HasPrefix(e.ebay.calls[len(e.ebay.calls)-2], "update OFF-1") {
 		t.Fatalf("relist: %v %v", s, e.ebay.calls)
+	}
+
+	// Live Listings: reprice, then end.
+	owner.must(204, "POST", "/v1/live/ebay/price", map[string]any{"card_id": card, "price": 45})
+	if last := e.ebay.calls[len(e.ebay.calls)-1]; !strings.Contains(last, `"offerId":"OFF-1"`) || !strings.Contains(last, `"value":"45.00"`) {
+		t.Fatalf("price: %s", last)
+	}
+	end := owner.must(200, "POST", "/v1/live/ebay/end", map[string]any{"card_ids": []string{card}})
+	c = owner.must(200, "GET", "/v1/inventory/cards/"+card, nil)["data"].(map[string]any)
+	if end["ended"].(float64) != 1 || c["status"] != "Ready" || c["ebay_listing_id"] != nil || c["sale_price"].(float64) != 45 ||
+		!strings.HasSuffix(e.ebay.calls[len(e.ebay.calls)-1], "/offer/OFF-1/withdraw") {
+		t.Fatalf("end: %v %v %v", end, c, e.ebay.calls)
 	}
 }

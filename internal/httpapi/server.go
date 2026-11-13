@@ -141,6 +141,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/ebay/location", requireAccount(s.handleEbayLocation))
 	mux.HandleFunc("POST /v1/live/slabs/end", requireAccount(s.handleLiveSlabsEnd))
 	mux.HandleFunc("POST /v1/live/slabs/price", requireAccount(s.handleLiveSlabsPrice))
+	mux.HandleFunc("POST /v1/live/ebay/end", requireAccount(s.handleLiveEbayEnd))
+	mux.HandleFunc("POST /v1/live/ebay/price", requireAccount(s.handleLiveEbayPrice))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
 	mux.HandleFunc("GET /v1/inventory/tree", requireAccount(s.handleInvTree))
 	mux.HandleFunc("GET /v1/inventory/dashboard", requireAccount(s.handleInvDashboard))
@@ -1414,6 +1416,59 @@ func (s *Server) handleLiveSlabsEnd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ended": n, "problems": problems})
+}
+
+func (s *Server) handleLiveEbayEnd(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		CardIDs []string `json:"card_ids"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.CardIDs) == 0 || len(in.CardIDs) > 500 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Pick the listings to end (up to 500).", nil)
+		return
+	}
+	sess, _ := currentSession(r)
+	n, problems, err := s.lister.EndEbay(r.Context(), sess.Account.ID, in.CardIDs)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ended": n, "problems": problems})
+}
+
+func (s *Server) handleLiveEbayPrice(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		CardID string  `json:"card_id"`
+		Price  float64 `json:"price"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Price < 0.99 || in.Price > 1_000_000 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Enter a price of at least $0.99.", map[string]string{"price": "Too low."})
+		return
+	}
+	sess, _ := currentSession(r)
+	err := s.lister.PriceEbay(r.Context(), sess.Account.ID, in.CardID, in.Price)
+	var pe *lister.PriceError
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.As(err, &pe):
+		writeError(w, http.StatusBadGateway, "ebay", pe.Msg, nil)
+	case errors.Is(err, sql.ErrNoRows):
+		writeError(w, http.StatusNotFound, "not_found", "That card isn't in your online inventory.", nil)
+	default:
+		s.ebayError(w, r, err)
+	}
 }
 
 func (s *Server) handleLiveSlabsPrice(w http.ResponseWriter, r *http.Request) {

@@ -154,3 +154,81 @@ func (s *Service) listEbay(ctx context.Context, accountID, edition, cardID strin
 	}
 	return "listed", "Listed."
 }
+
+// EndEbay ends the cards' eBay listings (the offer is withdrawn, like the
+// desktop's Remove from eBay) and puts the cards back to Ready to list.
+func (s *Service) EndEbay(ctx context.Context, accountID string, cardIDs []string) (int, []string, error) {
+	if s.Ebay == nil {
+		return 0, nil, ebay.ErrNotConfigured
+	}
+	token, err := s.Ebay.AccessToken(ctx, accountID)
+	if err != nil {
+		return 0, nil, err
+	}
+	n := 0
+	var problems []string
+	for _, id := range cardIDs {
+		var raw []byte
+		var edition string
+		var version int
+		if err := s.DB.QueryRowContext(ctx, `SELECT data, edition, version FROM sync_cards WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
+			strings.ToLower(id), accountID).Scan(&raw, &edition, &version); err != nil {
+			continue
+		}
+		var c ebay.Card
+		_ = json.Unmarshal(raw, &c)
+		if c.EbayOfferID == nil || *c.EbayOfferID == "" {
+			problems = append(problems, c.Sku+": no eBay offer id on this card (end it on eBay or in FireCardManager on your PC).")
+			continue
+		}
+		if err := s.Ebay.Withdraw(ctx, token, *c.EbayOfferID); err != nil {
+			problems = append(problems, c.Sku+": "+ebayDescribe(err))
+			continue
+		}
+		now := time.Now()
+		at, _ := json.Marshal(now.UTC().Format("2006-01-02T15:04:05.0000000Z"))
+		if _, err := s.Sync.Push(ctx, cloudsync.Device{AccountID: accountID, Edition: edition}, []cloudsync.Change{{
+			Entity: "card", ID: strings.ToLower(id), BaseVersion: version, EditedAt: now,
+			Fields: map[string]json.RawMessage{"status": json.RawMessage(`"Ready"`), "ebay_listing_id": json.RawMessage("null"),
+				"ebay_listing_url": json.RawMessage("null"), "updated_at": at},
+		}}); err != nil {
+			return n, problems, err
+		}
+		n++
+	}
+	return n, problems, nil
+}
+
+// PriceEbay changes a fixed-price eBay listing's price and the card's.
+func (s *Service) PriceEbay(ctx context.Context, accountID, cardID string, price float64) error {
+	if s.Ebay == nil {
+		return ebay.ErrNotConfigured
+	}
+	token, err := s.Ebay.AccessToken(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	var raw []byte
+	var edition string
+	var version int
+	if err := s.DB.QueryRowContext(ctx, `SELECT data, edition, version FROM sync_cards WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
+		strings.ToLower(cardID), accountID).Scan(&raw, &edition, &version); err != nil {
+		return err
+	}
+	var c ebay.Card
+	_ = json.Unmarshal(raw, &c)
+	if c.EbayOfferID == nil || *c.EbayOfferID == "" || c.Status != "EBF" {
+		return &PriceError{"Only a Buy It Now listing made with an offer id can be repriced here."}
+	}
+	if err := s.Ebay.SetPrice(ctx, token, c.Sku, *c.EbayOfferID, price); err != nil {
+		return &PriceError{ebayDescribe(err)}
+	}
+	now := time.Now()
+	p, _ := json.Marshal(float64(int(price*100+0.5)) / 100)
+	at, _ := json.Marshal(now.UTC().Format("2006-01-02T15:04:05.0000000Z"))
+	_, err = s.Sync.Push(ctx, cloudsync.Device{AccountID: accountID, Edition: edition}, []cloudsync.Change{{
+		Entity: "card", ID: strings.ToLower(cardID), BaseVersion: version, EditedAt: now,
+		Fields: map[string]json.RawMessage{"sale_price": p, "updated_at": at},
+	}})
+	return err
+}

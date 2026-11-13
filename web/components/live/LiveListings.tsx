@@ -12,7 +12,7 @@ type Res = { edition: string; cards: Live[]; slabs_checked: boolean; slabs_probl
 const onEbay = (d: CardData) => d.status === "EBA" || d.status === "EBF";
 const onSlabs = (d: CardData) => !!d.marketplace_listing_id;
 
-export default function LiveListings({ edition, hasKey }: { edition: string; hasKey: boolean }) {
+export default function LiveListings({ edition, hasKey, ebayOn }: { edition: string; hasKey: boolean; ebayOn: boolean }) {
   const [res, setRes] = useState<Res | null>(null);
   const [where, setWhere] = useState("");
   const [q, setQ] = useState("");
@@ -38,6 +38,31 @@ export default function LiveListings({ edition, hasKey }: { edition: string; has
   const slabsCount = (res?.cards ?? []).filter((c) => onSlabs(c.data)).length;
   const sel = cards.filter((c) => picked.has(c.id));
   const selSlabs = sel.filter((c) => onSlabs(c.data));
+  const selEbay = sel.filter((c) => onEbay(c.data) && c.data.ebay_offer_id);
+
+  async function endEbay(ids: string[]) {
+    if (!confirm(`End ${ids.length} eBay listing${ids.length === 1 ? "" : "s"}? The card${ids.length === 1 ? " goes" : "s go"} back to Ready to list.`)) return;
+    setBusy(true);
+    const r = await send<{ ended: number; problems?: string[] }>("POST", "/v1/live/ebay/end", { card_ids: ids });
+    setBusy(false);
+    if (!r.ok) return setMsg({ text: r.message, bad: true });
+    setMsg({ text: `Ended ${r.data.ended} eBay listing${r.data.ended === 1 ? "" : "s"}.${r.data.problems?.length ? " " + r.data.problems.join(" ") : ""}`, bad: !!r.data.problems?.length });
+    setPicked(new Set());
+    load();
+  }
+
+  async function repriceEbay(c: Live) {
+    const v = prompt(`New eBay price for ${c.data.player_name}:`, c.data.sale_price?.toFixed(2) ?? "");
+    if (v === null) return;
+    const price = Number(v.replace(/[$,\s]/g, ""));
+    if (!(price > 0)) return setMsg({ text: "Enter a price like 12.50.", bad: true });
+    setBusy(true);
+    const r = await send("POST", "/v1/live/ebay/price", { card_id: c.id, price });
+    setBusy(false);
+    if (!r.ok) return setMsg({ text: r.message, bad: true });
+    setMsg({ text: `${c.data.player_name} is now ${money(price)} on eBay and in your inventory.` });
+    load();
+  }
 
   async function end(ids: string[]) {
     if (!confirm(`End ${ids.length} Slabs & Singles listing${ids.length === 1 ? "" : "s"}? The card${ids.length === 1 ? " stays" : "s stay"} in your inventory.`)) return;
@@ -82,17 +107,22 @@ export default function LiveListings({ edition, hasKey }: { edition: string; has
           {res.slabs_problem || (hasKey ? "" : <>Add a Slabs &amp; Singles key made for FireCardManager Web on the <Link href="/account#market-keys" className="font-semibold text-fire">Account page</Link> to see the site&apos;s prices and change or end listings here.</>)}
         </p>
       )}
-      {ebayCount > 0 && (
-        <p className="text-[12px] text-muted">eBay listings show here as your PC synced them. Ending or repricing them from the web comes with eBay on FireCardManager Web; until then use FireCardManager on your PC or eBay.</p>
+      {ebayCount > 0 && !ebayOn && (
+        <p className="text-[12px] text-muted">Connect eBay on the <Link href="/account#ebay" className="font-semibold text-fire">Account page</Link> to end or reprice eBay listings here.</p>
       )}
 
-      {(selSlabs.length > 0 || msg) && (
+      {(selSlabs.length > 0 || selEbay.length > 0 || msg) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-wash px-3 py-2 text-[13px]">
           {selSlabs.length > 0 && (
             <>
               <span className="font-semibold">{selSlabs.length} Slabs &amp; Singles listing{selSlabs.length === 1 ? "" : "s"} selected</span>
               <button type="button" className="btn-ghost !py-1 text-bad" disabled={busy || !res?.slabs_checked} onClick={() => end(selSlabs.map((c) => c.id))}>End on Slabs &amp; Singles</button>
             </>
+          )}
+          {ebayOn && selEbay.length > 0 && (
+            <button type="button" className="btn-ghost !py-1 text-bad" disabled={busy} onClick={() => endEbay(selEbay.map((c) => c.id))}>
+              End {selEbay.length} on eBay
+            </button>
           )}
           {msg && <span role="status" className={`ml-auto ${msg.bad ? "text-bad" : "text-go"}`}>{msg.text}</span>}
         </div>
@@ -151,6 +181,12 @@ export default function LiveListings({ edition, hasKey }: { edition: string; has
                   <td className="whitespace-nowrap px-2 text-right">
                     {onEbay(d) && d.ebay_listing_id && (
                       <a className="mr-3 font-semibold text-link" href={`https://www.ebay.com/itm/${d.ebay_listing_id}`} target="_blank" rel="noopener noreferrer">eBay ↗</a>
+                    )}
+                    {ebayOn && onEbay(d) && d.ebay_offer_id && d.status === "EBF" && (
+                      <button type="button" className="mr-3 font-semibold text-link" disabled={busy} onClick={() => repriceEbay(c)}>Price</button>
+                    )}
+                    {ebayOn && onEbay(d) && d.ebay_offer_id && (
+                      <button type="button" className="mr-3 font-semibold text-bad" disabled={busy} onClick={() => endEbay([c.id])}>End</button>
                     )}
                     {onSlabs(d) && (
                       <>
