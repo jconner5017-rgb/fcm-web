@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -106,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/photos/upload-urls", s.requireDevice(s.handlePhotoUploadURLs))
 	mux.HandleFunc("POST /v1/photos/confirm", s.requireDevice(s.handlePhotoConfirm))
 	mux.HandleFunc("GET /v1/photos/{id}", s.handlePhotoView) // website (session) or desktop (device token)
+	mux.HandleFunc("GET /v1/p/{file}", s.handlePublicPhoto)  // permanent link for Shopify/Whatnot imports (add-on)
 
 	// Admin (owner, with 2FA on)
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
@@ -670,6 +672,8 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": st, "account_email": a.Email, "sync_allowed": a.SyncAllowed(s.now()),
 		"trial_ends_at": a.SyncTrialEndsAt, "web_addon": a.WebAddonAt != nil, "edition": d.Edition, "device_id": d.ID,
+		// Hosted photo links for Shopify and Whatnot exports come with the add-on.
+		"photo_links": (a.WebAddonAt != nil || a.IsAdmin) && s.photos.Enabled(),
 	})
 }
 
@@ -845,4 +849,31 @@ func (s *Server) handlePhotoView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, u, http.StatusFound)
+}
+
+// handlePublicPhoto serves /v1/p/<photo id>.jpg: the permanent photo link a
+// Shopify or Whatnot import file points at. Those services fetch the image
+// once and keep their own copy.
+func (s *Server) handlePublicPhoto(w http.ResponseWriter, r *http.Request) {
+	id, ok := strings.CutSuffix(strings.ToLower(r.PathValue("file")), ".jpg")
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "Photo not found.", nil)
+		return
+	}
+	body, size, err := s.photos.PublicPhoto(r.Context(), id)
+	if errors.Is(err, photos.ErrNoHosting) {
+		writeError(w, http.StatusForbidden, "no_hosting", err.Error(), nil)
+		return
+	}
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	defer body.Close()
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	io.Copy(w, body)
 }

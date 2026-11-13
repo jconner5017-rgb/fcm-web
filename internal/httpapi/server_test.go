@@ -657,6 +657,31 @@ func TestPhotos(t *testing.T) {
 		t.Fatalf("website view: %d %s", rr.StatusCode, rr.Header.Get("Location"))
 	}
 
+	// The permanent link for Shopify/Whatnot works only with the add-on (or for admins).
+	pub, _ := http.Get(e.srv.URL + "/v1/p/" + photoID + ".jpg")
+	if pub.StatusCode != 403 {
+		t.Fatalf("public link without add-on: %d", pub.StatusCode)
+	}
+	pub.Body.Close()
+	if st := pcA.must(200, "GET", "/v1/sync/status", nil); st["photo_links"] != false {
+		t.Fatalf("status photo_links without add-on: %v", st["photo_links"])
+	}
+	e.db.Exec(`UPDATE accounts SET web_addon_at = now() WHERE email = 'photos@example.com'`)
+	pub, _ = http.Get(e.srv.URL + "/v1/p/" + strings.ToUpper(photoID) + ".jpg")
+	pubBody, _ := io.ReadAll(pub.Body)
+	pub.Body.Close()
+	if pub.StatusCode != 200 || pub.Header.Get("Content-Type") != "image/jpeg" || !bytes.Equal(pubBody, jpeg) {
+		t.Fatalf("public link with add-on: %d %s %d bytes", pub.StatusCode, pub.Header.Get("Content-Type"), len(pubBody))
+	}
+	if st := pcA.must(200, "GET", "/v1/sync/status", nil); st["photo_links"] != true {
+		t.Fatalf("status photo_links with add-on: %v", st["photo_links"])
+	}
+	for _, bad := range []string{photoID, "not-a-uuid.jpg", uuid(5) + ".jpg"} {
+		if r, _ := http.Get(e.srv.URL + "/v1/p/" + bad); r.StatusCode != 404 {
+			t.Fatalf("%s: %d", bad, r.StatusCode)
+		}
+	}
+
 	// Someone else's account can't see it.
 	stranger := e.link(e.signup("nosy@example.com"), "sports", "HWID-N", "")
 	stranger.must(404, "GET", "/v1/photos/"+photoID, nil)

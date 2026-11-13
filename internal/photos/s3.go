@@ -67,6 +67,29 @@ func (s *S3) Head(ctx context.Context, key string) (size int64, found bool, err 
 	return res.ContentLength, true, nil
 }
 
+// Get streams an object. The caller closes the body. found=false when it
+// doesn't exist.
+func (s *S3) Get(ctx context.Context, key string) (body io.ReadCloser, size int64, found bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.objectURL(key), nil)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	s.sign(req, nil, s.clock().UTC())
+	res, err := s.client().Do(req)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	switch {
+	case res.StatusCode == http.StatusNotFound:
+		res.Body.Close()
+		return nil, 0, false, nil
+	case res.StatusCode >= 300:
+		res.Body.Close()
+		return nil, 0, false, fmt.Errorf("photo storage GET: %d", res.StatusCode)
+	}
+	return res.Body, res.ContentLength, true, nil
+}
+
 func (s *S3) clock() time.Time {
 	if s.now != nil {
 		return s.now()

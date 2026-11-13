@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -251,6 +252,46 @@ func (s *Service) ViewURL(ctx context.Context, accountID, photoID string) (strin
 		return "", err
 	}
 	return s.Store.Presign("GET", key, ViewTTL, s.now()), nil
+}
+
+// ErrNoHosting: the account doesn't have the web add-on, which is what
+// includes hosted photo links for Shopify and Whatnot.
+var ErrNoHosting = errors.New("hosted photo links come with the FireCardManager Web add-on")
+
+// PublicPhoto opens a card photo for its permanent public link
+// (/v1/p/<photo id>.jpg), used as the image address in Shopify and Whatnot
+// import files. Only front and back photos, and only for accounts with the
+// web add-on (or admins). The photo id is a random UUID, so the link can't
+// be guessed.
+func (s *Service) PublicPhoto(ctx context.Context, photoID string) (io.ReadCloser, int64, error) {
+	if !s.Enabled() {
+		return nil, 0, ErrNotConfigured
+	}
+	if !uuidRE.MatchString(photoID) {
+		return nil, 0, ErrNotFound
+	}
+	var key string
+	var hosted bool
+	err := s.DB.QueryRowContext(ctx, `SELECT p.object_key, (a.web_addon_at IS NOT NULL OR a.is_admin) AND a.status = 'active'
+		FROM sync_photos p JOIN accounts a ON a.id = p.account_id
+		WHERE p.id = $1 AND p.status = 'ready' AND p.side IN ('front', 'back')`, photoID).Scan(&key, &hosted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, ErrNotFound
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	if !hosted {
+		return nil, 0, ErrNoHosting
+	}
+	body, size, found, err := s.Store.Get(ctx, key)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !found {
+		return nil, 0, ErrNotFound
+	}
+	return body, size, nil
 }
 
 // Cleanup deletes objects that were replaced, and forgets uploads that were
