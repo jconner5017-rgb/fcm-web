@@ -743,10 +743,16 @@ func TestPhotos(t *testing.T) {
 		t.Fatalf("website view: %d %s", rr.StatusCode, rr.Header.Get("Location"))
 	}
 
-	// The permanent link for Shopify/Whatnot works only with the add-on (or for admins).
+	// The permanent link for Shopify/Whatnot works during the trial and with the add-on (or for admins).
 	pub, _ := http.Get(e.srv.URL + "/v1/p/" + photoID + ".jpg")
+	if pub.StatusCode != 200 {
+		t.Fatalf("public link during the trial: %d", pub.StatusCode)
+	}
+	pub.Body.Close()
+	e.db.Exec(`UPDATE accounts SET sync_trial_ends_at = now() - interval '1 day' WHERE email = 'photos@example.com'`)
+	pub, _ = http.Get(e.srv.URL + "/v1/p/" + photoID + ".jpg")
 	if pub.StatusCode != 403 {
-		t.Fatalf("public link without add-on: %d", pub.StatusCode)
+		t.Fatalf("public link after the trial without add-on: %d", pub.StatusCode)
 	}
 	pub.Body.Close()
 	if st := pcA.must(200, "GET", "/v1/sync/status", nil); st["photo_links"] != false {
@@ -1266,5 +1272,93 @@ func TestBulkListerSlabs(t *testing.T) {
 	}
 	if recent := owner.must(200, "GET", "/v1/lister/jobs", nil)["jobs"].([]any); len(recent) != 2 || recent[0].(map[string]any)["id"] != j2["id"] {
 		t.Fatalf("recent: %v", recent)
+	}
+}
+
+func TestExportFiles(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("export@example.com")
+	pc := e.link(owner, "sports", "HWID-EX", "")
+	box := uuid(931)
+	front, back := uuid(932), uuid(933)
+	now := time.Now()
+	push(t, pc, ch("box", box, 0, now, map[string]any{"name": "Basketball"}),
+		ch("card", uuid(941), 0, now, map[string]any{"sport": "Basketball", "player_name": "Victor Wembanyama", "year": 2023, "season_end": 2024,
+			"brand": "Panini", "set_name": "Prizm", "card_number": "136", "variety": "Silver, \"Hyper\"", "condition": "Raw - NM", "estimated_value": 40,
+			"sale_price": 49.99, "status": "Ready", "sku": "FCM-1", "is_rookie": true, "box_id": box, "slot_row": "A", "slot_number": 1,
+			"last_priced_at": "2026-11-01T10:00:00", "front_photo_id": front, "back_photo_id": back}),
+		ch("card", uuid(942), 0, now, map[string]any{"sport": "Basketball", "player_name": "No Price", "year": 2020, "brand": "Topps", "set_name": "Chrome",
+			"card_number": "1", "condition": "Raw - EX", "status": "NotForSale", "sku": "FCM-2", "box_id": box, "slot_row": "A", "slot_number": 2}))
+
+	res := owner.must(200, "POST", "/v1/export", map[string]any{"kind": "cards", "filter": map[string]any{"sport": "Basketball"}})
+	csv := res["csv"].(string)
+	lines := strings.Split(strings.TrimSpace(csv), "\r\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "Id,Sport,PlayerName,Team,Year,Brand,SetName,CardNumber,Variety,Condition,EstimatedValue,FrontImageFileName,BackImageFileName,BoxName,SlotRow,SlotNumber,LastPricedAt,") {
+		t.Fatalf("cards csv: %q", csv)
+	}
+	if !strings.Contains(lines[1], `,"Silver, ""Hyper""",Raw - NM,40.00,https://app.test/api/v1/p/`+front+`.jpg,https://app.test/api/v1/p/`+back+`.jpg,Basketball,A,1,2026-11-01T10:00:00,FCM-1,2024,`) {
+		t.Fatalf("card row: %q", lines[1])
+	}
+	if !strings.HasPrefix(res["file_name"].(string), "FireCardManager_Export_") {
+		t.Fatalf("name: %v", res["file_name"])
+	}
+
+	// Just the picked cards.
+	one := owner.must(200, "POST", "/v1/export", map[string]any{"kind": "cards", "card_ids": []string{uuid(942)}})
+	if one["exported"].(float64) != 1 || !strings.Contains(one["csv"].(string), "No Price") || strings.Contains(one["csv"].(string), "Wembanyama") {
+		t.Fatalf("picked: %v", one)
+	}
+
+	// Shopify: the unpriced card is skipped, the other gets both photo rows.
+	sh := owner.must(200, "POST", "/v1/export", map[string]any{"kind": "shopify", "shopify": map[string]any{"vendor": "My Shop", "product_type": "Trading Card", "tags": "cards"}})
+	if sh["exported"].(float64) != 1 || sh["skipped"].(float64) != 1 {
+		t.Fatalf("shopify: %v", sh)
+	}
+	sl := strings.Split(strings.TrimSpace(sh["csv"].(string)), "\r\n")
+	if len(sl) != 3 || !strings.Contains(sl[1], "2023-24 Panini Prizm Victor Wembanyama") || !strings.Contains(sl[1], ",FCM-1,30,shopify,1,deny,manual,49.99,") ||
+		!strings.HasSuffix(sl[1], ",draft") || !strings.Contains(sl[2], back+".jpg,2,") {
+		t.Fatalf("shopify csv: %q", sh["csv"])
+	}
+
+	// Whatnot needs its category and shipping profile.
+	owner.must(422, "POST", "/v1/export", map[string]any{"kind": "whatnot", "whatnot": map[string]any{"category": "Sports Cards"}})
+	wn := owner.must(200, "POST", "/v1/export", map[string]any{"kind": "whatnot", "whatnot": map[string]any{
+		"category": "Sports Cards", "shipping_profile": "Standard", "offerable": true}})
+	wl := strings.Split(strings.TrimSpace(wn["csv"].(string)), "\r\n")
+	if len(wl) != 2 || !strings.HasPrefix(wl[1], "Sports Cards,Basketball Cards,") || !strings.Contains(wl[1], ",1,Buy it Now,49.99,Standard,TRUE,Not Hazmat,Near Mint,,FCM-1,") {
+		t.Fatalf("whatnot csv: %q", wn["csv"])
+	}
+	owner.must(422, "POST", "/v1/export", map[string]any{"kind": "ebay"})
+}
+
+func TestImportCards(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("import@example.com")
+
+	// No PC: only the category is needed, the rest waits for identification,
+	// and the card gets a web SKU so it can be listed and exported.
+	c := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "tcg", "import": true, "fields": map[string]any{"sport": "Pokemon"}})
+	d := c["data"].(map[string]any)
+	if d["player_name"] != "(unidentified - pending ID)" || d["year"].(float64) != 0 || d["condition"] != "Raw - NM" || c["box_name"] != "Pokemon" ||
+		!strings.HasPrefix(d["sku"].(string), "FCMW-") || len(d["sku"].(string)) != 13 {
+		t.Fatalf("imported: %v", c)
+	}
+	// Without import, the details are still required.
+	owner.must(422, "POST", "/v1/inventory/cards", map[string]any{"edition": "tcg", "fields": map[string]any{"sport": "Pokemon"}})
+
+	// A box named in the CSV is used when it exists; otherwise the category's box.
+	pc := e.link(owner, "sports", "HWID-IM", "")
+	box := uuid(951)
+	push(t, pc, ch("box", box, 0, time.Now(), map[string]any{"name": "Show Box"}),
+		ch("card", uuid(952), 0, time.Now(), map[string]any{"player_name": "Already", "status": "Ready", "box_id": box, "slot_row": "A", "slot_number": 3}))
+	in := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "import": true, "box_name": "show box",
+		"fields": map[string]any{"sport": "Baseball", "player_name": "Mike Trout", "year": 2011}})
+	if in["box_name"] != "Show Box" || in["data"].(map[string]any)["slot_number"].(float64) != 4 || in["data"].(map[string]any)["sku"] != nil {
+		t.Fatalf("named box (PC linked, so no web SKU): %v", in)
+	}
+	other := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "import": true, "box_name": "Nope",
+		"fields": map[string]any{"sport": "Baseball"}})
+	if other["box_name"] != "Baseball" {
+		t.Fatalf("unknown box: %v", other)
 	}
 }

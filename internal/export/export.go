@@ -43,6 +43,18 @@ func Parse(id, boxName string, data []byte) Card {
 // PhotoLink is the hosted link for a photo id ("" for none).
 type PhotoLink func(photoID string) string
 
+// HostedLinks makes the permanent links the desktop uses too:
+// <web url>/api/v1/p/<photo id>.jpg.
+func HostedLinks(webURL string) PhotoLink {
+	base := strings.TrimRight(webURL, "/")
+	return func(id string) string {
+		if id == "" {
+			return ""
+		}
+		return base + "/api/v1/p/" + strings.ToLower(id) + ".jpg"
+	}
+}
+
 // Writer builds a CSV the way the desktop does: CRLF lines, quoted only
 // when needed, UTF-8 without a BOM.
 type Writer struct{ b strings.Builder }

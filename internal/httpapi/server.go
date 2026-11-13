@@ -18,6 +18,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/export"
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
@@ -132,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inventory/conflicts", requireAccount(s.handleInvConflicts))
 	mux.HandleFunc("POST /v1/inventory/identify", requireAccount(s.handleInvIdentify))
 	mux.HandleFunc("POST /v1/inventory/cards", requireAccount(s.handleInvCreate))
+	mux.HandleFunc("POST /v1/export", requireAccount(s.handleExport)) // FCM card CSV, Shopify, Whatnot
 	mux.HandleFunc("POST /v1/inventory/cards/{id}/photo-urls", requireAccount(s.handleInvPhotoURLs))
 	mux.HandleFunc("POST /v1/inventory/photos/confirm", requireAccount(s.handleInvPhotoConfirm))
 	mux.HandleFunc("GET /v1/me/ai-key", requireAccount(s.handleAIKeyGet))
@@ -712,7 +714,7 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 		"status": st, "account_email": a.Email, "sync_allowed": a.SyncAllowed(s.now()),
 		"trial_ends_at": a.SyncTrialEndsAt, "web_addon": a.AddonActive(s.now()), "web_addon_until": a.WebAddonUntil, "edition": d.Edition, "device_id": d.ID,
 		// Hosted photo links for Shopify and Whatnot exports come with the add-on.
-		"photo_links": (a.AddonActive(s.now()) || a.IsAdmin) && s.photos.Enabled(),
+		"photo_links": a.SyncAllowed(s.now()) && s.photos.Enabled(),
 	})
 }
 
@@ -1181,12 +1183,20 @@ func (s *Server) handleInvCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Edition string                     `json:"edition"`
 		Fields  map[string]json.RawMessage `json:"fields"`
+		Import  bool                       `json:"import"`   // from a CSV import: only the category is required
+		BoxName string                     `json:"box_name"` // import: an existing box to put it in
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
 	sess, _ := currentSession(r)
-	c, err := s.inv.CreateCard(r.Context(), sess.Account.ID, in.Edition, inventory.NewID(), in.Fields)
+	var c inventory.Card
+	var err error
+	if in.Import {
+		c, err = s.inv.ImportCard(r.Context(), sess.Account.ID, in.Edition, inventory.NewID(), in.Fields, inventory.ImportOptions{BoxName: in.BoxName})
+	} else {
+		c, err = s.inv.CreateCard(r.Context(), sess.Account.ID, in.Edition, inventory.NewID(), in.Fields)
+	}
 	if err != nil {
 		s.invEditError(w, r, err)
 		return
@@ -1535,4 +1545,82 @@ func (s *Server) handleListerStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleListerGet(w, r)
+}
+
+// ---------------- export (computer) ----------------
+
+// handleExport writes the same files as the desktop apps (Export Database,
+// Shopify, Whatnot) for the chosen cards, with hosted photo links.
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Edition string   `json:"edition"`
+		Kind    string   `json:"kind"` // cards, shopify, whatnot
+		CardIDs []string `json:"card_ids"`
+		Filter  *struct {
+			Sport  string `json:"sport"`
+			Box    string `json:"box"`
+			Row    string `json:"row"`
+			Status string `json:"status"`
+			Q      string `json:"q"`
+		} `json:"filter"`
+		Shopify export.ShopifyOptions `json:"shopify"`
+		Whatnot export.WhatnotOptions `json:"whatnot"`
+	}
+	if !decodeJSONMax(w, r, &in, 2<<20) {
+		return
+	}
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if in.Edition == "sports" || in.Edition == "tcg" {
+		ed = in.Edition
+	}
+	if in.Kind == "whatnot" && (strings.TrimSpace(in.Whatnot.Category) == "" || strings.TrimSpace(in.Whatnot.ShippingProfile) == "") {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Fill in Whatnot's Category and Shipping profile exactly as they appear in Whatnot's template.",
+			map[string]string{"whatnot": "Required."})
+		return
+	}
+	q := inventory.Query{Edition: ed, Sort: "slot", All: true}
+	switch {
+	case in.CardIDs != nil:
+		q.IDs = in.CardIDs
+	case in.Filter != nil:
+		q.Sport, q.Box, q.Row, q.Status, q.Search = in.Filter.Sport, in.Filter.Box, in.Filter.Row, in.Filter.Status, in.Filter.Q
+	}
+	page, err := s.inv.Cards(r.Context(), sess.Account.ID, q)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	rows := make([]export.Card, len(page.Cards))
+	for i, c := range page.Cards {
+		rows[i] = export.Parse(c.ID, c.BoxName, c.Data)
+	}
+	link := export.HostedLinks(s.webURL)
+	var res export.Result
+	name := "FireCardManager_Export"
+	switch in.Kind {
+	case "cards":
+		res = export.Result{CSV: export.CardsCSV(rows, link), Exported: len(rows)}
+	case "shopify":
+		res, name = export.Shopify(rows, in.Shopify, link), "Shopify_Import"
+	case "whatnot":
+		res, name = export.Whatnot(rows, in.Whatnot, link), "Whatnot_Upload"
+	default:
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Choose what to export.", map[string]string{"kind": "Use cards, shopify or whatnot."})
+		return
+	}
+	if ed == "tcg" {
+		name = strings.Replace(name, "FireCardManager", "FireCardManagerTCG", 1)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"file_name": name + "_" + s.now().Format("20060102") + ".csv",
+		"csv": res.CSV, "exported": res.Exported, "skipped": len(rows) - res.Exported, "notes": res.Notes,
+	})
 }

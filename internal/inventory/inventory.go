@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
+	"github.com/lib/pq"
 )
 
 const (
@@ -280,8 +281,10 @@ type Query struct {
 	Desc      bool
 	Page      int // from 1
 	PerPage   int
-	WithBacks bool // also sign back thumbnails
-	WithFull  bool // also sign the full-size front and back
+	WithBacks bool     // also sign back thumbnails
+	WithFull  bool     // also sign the full-size front and back
+	IDs       []string // only these cards (exports of a selection)
+	All       bool     // every match on one page, no photo links (exports)
 }
 
 type CardRow struct {
@@ -336,7 +339,9 @@ func Words(q string) []string {
 }
 
 func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPage, error) {
-	if q.PerPage <= 0 || q.PerPage > MaxPerPage {
+	if q.All {
+		q.PerPage, q.Page = cloudsync.CardLimit+1, 1
+	} else if q.PerPage <= 0 || q.PerPage > MaxPerPage {
 		q.PerPage = 60
 	}
 	if q.Page < 1 {
@@ -368,6 +373,15 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	}
 	for _, w := range Words(q.Search) {
 		add(searchText+` ILIKE $%d`, likeEscape(w))
+	}
+	if q.IDs != nil {
+		var ids []string
+		for _, id := range q.IDs {
+			if uuidRE.MatchString(id) {
+				ids = append(ids, strings.ToLower(id))
+			}
+		}
+		add("c.id::text = ANY($%d)", pq.Array(ids))
 	}
 
 	sortKey, ok := sorts[q.Sort]
@@ -413,6 +427,9 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	}
 	if err := rows.Err(); err != nil {
 		return out, err
+	}
+	if q.All {
+		return out, nil
 	}
 	// Signed links straight to photo storage: the front thumbnail for every
 	// tile, and the back one too (the Boxes page shows both).

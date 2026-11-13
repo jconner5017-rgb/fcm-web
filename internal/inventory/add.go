@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,7 @@ import (
 const (
 	aiKeyPurpose     = "ai-key"
 	IdentifyPerHour  = 600 // the customer's own AI key pays; this only guards the server
-	RowSize          = 50 // cards per row, like the desktop's filing
+	RowSize          = 50  // cards per row, like the desktop's filing
 	maxIdentifyPhoto = 4 << 20
 )
 
@@ -165,7 +166,39 @@ var createExtra = map[string]bool{"sport": true, "sale_price_percent": true, "la
 
 // CreateCard adds a card made on the website. With a box but no slot, it
 // goes after the box's last card (a new row after 50), like the desktop.
+// WebSKU is a SKU for a card made on the website by a seller without a PC:
+// FCMW- and 8 letters and digits (no 0/O or 1/I).
+func WebSKU() string {
+	const abc = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = abc[int(b[i])%len(abc)]
+	}
+	return "FCMW-" + string(b)
+}
+
+// PendingName is the desktop's placeholder for a card not identified yet.
+const PendingName = "(unidentified - pending ID)"
+
+// ImportOptions: a card from a CSV import, as the desktop's importer takes
+// it. Only the category (and the photos) are required; blank details are
+// filled in later. A BoxName that matches one of the seller's boxes puts the
+// card after that box's last card; otherwise it's filed by category.
+type ImportOptions struct {
+	BoxName string
+}
+
 func (s *Service) CreateCard(ctx context.Context, accountID, edition, id string, in map[string]json.RawMessage) (Card, error) {
+	return s.createCard(ctx, accountID, edition, id, in, nil)
+}
+
+// ImportCard adds one card from a CSV import (see ImportOptions).
+func (s *Service) ImportCard(ctx context.Context, accountID, edition, id string, in map[string]json.RawMessage, o ImportOptions) (Card, error) {
+	return s.createCard(ctx, accountID, edition, id, in, &o)
+}
+
+func (s *Service) createCard(ctx context.Context, accountID, edition, id string, in map[string]json.RawMessage, imp *ImportOptions) (Card, error) {
 	if edition != "sports" && edition != "tcg" {
 		return Card{}, FieldErrors{"edition": "Choose Sports or TCG."}
 	}
@@ -208,6 +241,17 @@ func (s *Service) CreateCard(ctx context.Context, accountID, edition, id string,
 			continue
 		}
 		fields[k] = v
+	}
+	if imp != nil {
+		// Blank details are fine on import, like the desktop's importer.
+		defaults := map[string]string{"player_name": `"` + PendingName + `"`, "brand": `""`, "set_name": `""`, "card_number": `""`,
+			"condition": `"Raw - NM"`, "year": "0"}
+		for k, v := range defaults {
+			if _, ok := fields[k]; !ok && (bad[k] == "" || bad[k] == "Required.") {
+				delete(bad, k)
+				fields[k] = json.RawMessage(v)
+			}
+		}
 	}
 	for _, k := range []string{"player_name", "brand", "set_name", "card_number", "condition"} {
 		if _, ok := fields[k]; !ok && bad[k] == "" {
@@ -252,14 +296,34 @@ func (s *Service) CreateCard(ctx context.Context, accountID, edition, id string,
 		return Card{}, err
 	}
 	defer unlock()
-	box, row, slot, err := s.FileSpot(ctx, d, category)
-	if err != nil {
-		return Card{}, err
+	var box, row string
+	var slot int
+	if imp != nil && strings.TrimSpace(imp.BoxName) != "" {
+		box, row, slot, err = s.namedBoxSpot(ctx, d, imp.BoxName)
+		if err != nil {
+			return Card{}, err
+		}
+	}
+	if box == "" {
+		box, row, slot, err = s.FileSpot(ctx, d, category)
+		if err != nil {
+			return Card{}, err
+		}
 	}
 	fields["box_id"], _ = json.Marshal(box)
 	fields["slot_row"], _ = json.Marshal(row)
 	fields["slot_number"] = json.RawMessage(fmt.Sprint(slot))
 
+	// A seller with no PC for this app gets a web SKU (the desktop names its
+	// own cards FCM-<number>), so the card can be listed and exported.
+	var pcs int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM devices WHERE account_id = $1 AND edition = $2 AND revoked_at IS NULL`,
+		accountID, edition).Scan(&pcs); err != nil {
+		return Card{}, err
+	}
+	if pcs == 0 {
+		fields["sku"], _ = json.Marshal(WebSKU())
+	}
 	now := time.Now()
 	fields["created_at"], fields["updated_at"] = timeJSON(now), timeJSON(now)
 	r, err := s.push(ctx, d, cloudsync.Change{
@@ -344,6 +408,25 @@ func (s *Service) FileSpot(ctx context.Context, d cloudsync.Device, category str
 		return "", "", 0, err
 	}
 	return id, RowLetter(0), 1, nil
+}
+
+// namedBoxSpot is the slot after the last card of the seller's box with
+// this name ("" when there's no such box or it's full).
+func (s *Service) namedBoxSpot(ctx context.Context, d cloudsync.Device, name string) (string, string, int, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM sync_boxes WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL
+		AND lower(coalesce(data->>'name', '')) = lower($3) ORDER BY updated_at LIMIT 1`, d.AccountID, d.Edition, strings.TrimSpace(name)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", 0, nil
+	}
+	if err != nil {
+		return "", "", 0, err
+	}
+	row, slot, ok, err := s.appendSlot(ctx, d.AccountID, id)
+	if err != nil || !ok {
+		return "", "", 0, err
+	}
+	return id, row, slot, nil
 }
 
 // appendSlot is the slot after the box's last card; ok is false when the
