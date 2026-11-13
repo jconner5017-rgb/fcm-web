@@ -159,7 +159,7 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
           {(picked.size > 0 || allMatching) && (
             <button type="button" className="text-muted hover:text-fire" onClick={() => { setPicked(new Set()); setAllMatching(false); }}>Clear</button>
           )}
-          <span className="ml-auto num text-muted">{data ? `${data.total.toLocaleString()} cards` : ""}</span>
+          <span className="ml-auto num text-muted">{data ? `${data.total.toLocaleString()} card${data.total === 1 ? "" : "s"}` : ""}</span>
         </div>
 
         <ul className="divide-y divide-line rounded-xl border border-line">
