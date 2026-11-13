@@ -541,8 +541,22 @@ const soldSearchText = `concat_ws(' ', c.data->>'player_name', c.data->>'team', 
 	c.data->>'card_number', c.data->>'variety', c.data->>'year', c.data->>'buyer', c.data->>'notes', c.data->>'sport',
 	c.data->>'tracking_number')`
 
-func (s *Service) Sold(ctx context.Context, accountID, edition, search string, page, perPage int) (SoldPage, error) {
-	if perPage <= 0 || perPage > MaxPerPage {
+// SoldFilter narrows the Sold Log like the desktop's: days back, where it
+// sold, and whether shipped or archived sales show.
+type SoldFilter struct {
+	Days         int    // 0: all time
+	Where        string // ebay, slabs, other, "" for all
+	ShowShipped  bool
+	ShowArchived bool
+}
+
+// soldShipped: has a tracking number or a shipped date (SoldCard.IsShipped).
+const soldShipped = `(coalesce(c.data->>'tracking_number', '') <> '' OR coalesce(c.data->>'shipped_date_utc', '') <> '')`
+
+func (s *Service) Sold(ctx context.Context, accountID, edition, search string, page, perPage int, f ...SoldFilter) (SoldPage, error) {
+	if perPage == -1 { // everything (the export)
+		perPage, page = 1_000_000, 1
+	} else if perPage <= 0 || perPage > MaxPerPage {
 		perPage = 60
 	}
 	if page < 1 {
@@ -553,6 +567,27 @@ func (s *Service) Sold(ctx context.Context, accountID, edition, search string, p
 	for _, w := range Words(search) {
 		args = append(args, likeEscape(w))
 		where = append(where, fmt.Sprintf(soldSearchText+` ILIKE $%d`, len(args)))
+	}
+	if len(f) == 1 {
+		o := f[0]
+		if o.Days > 0 {
+			args = append(args, time.Now().AddDate(0, 0, -o.Days).UTC().Format("2006-01-02T15:04:05"))
+			where = append(where, fmt.Sprintf("coalesce(c.data->>'sale_date', '') >= $%d", len(args)))
+		}
+		switch o.Where {
+		case "slabs":
+			where = append(where, "coalesce(c.data->>'marketplace_order_id', '') <> ''")
+		case "ebay":
+			where = append(where, "coalesce(c.data->>'marketplace_order_id', '') = '' AND coalesce((c.data->>'sold_outside_ebay')::boolean, false) = false")
+		case "other":
+			where = append(where, "coalesce(c.data->>'marketplace_order_id', '') = '' AND coalesce((c.data->>'sold_outside_ebay')::boolean, false)")
+		}
+		if !o.ShowShipped {
+			where = append(where, "NOT "+soldShipped)
+		}
+		if !o.ShowArchived {
+			where = append(where, "coalesce((c.data->>'archived')::boolean, false) = false")
+		}
 	}
 	out := SoldPage{Sold: []SoldRow{}, Page: page, PerPage: perPage}
 	err := s.DB.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(CASE WHEN jsonb_typeof(c.data->'sale_price') = 'number'

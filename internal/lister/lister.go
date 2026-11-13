@@ -135,6 +135,13 @@ func (s *Service) SaveSettings(ctx context.Context, accountID, market string, se
 }
 
 // key is the website's own key for the marketplace, with the PC's defaults.
+// Key is the seller's marketplace key (for calls other than listing, like
+// marking an order shipped).
+func (s *Service) Key(ctx context.Context, accountID, market string) (string, error) {
+	k, _, err := s.key(ctx, accountID, market)
+	return k, err
+}
+
 func (s *Service) key(ctx context.Context, accountID, market string) (string, json.RawMessage, error) {
 	var box, settings []byte
 	err := s.DB.QueryRowContext(ctx, `SELECT k.key_enc, coalesce(m.settings, k.settings) FROM account_market_keys k

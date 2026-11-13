@@ -26,6 +26,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,7 @@ type fakeSlabs struct {
 	photos   int
 	listings []map[string]any
 	auth     string
+	shipped  []string
 }
 
 func (f *fakeSlabs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +77,13 @@ func (f *fakeSlabs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.listings = append(f.listings, in)
 		fmt.Fprintf(w, `{"listing":{"id":"lst-%d","external_id":%q,"status":"active"},"created":true}`, len(f.listings), in["external_id"])
 	default:
+		if strings.HasPrefix(r.URL.Path, "/v1/orders/") && strings.HasSuffix(r.URL.Path, "/ship") {
+			var in map[string]any
+			json.NewDecoder(r.Body).Decode(&in)
+			f.shipped = append(f.shipped, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/orders/"), "/ship")+":"+fmt.Sprint(in["tracking_number"]))
+			fmt.Fprint(w, `{"order":{"id":"o1","status":"shipped"}}`)
+			return
+		}
 		w.WriteHeader(404)
 	}
 }
@@ -1436,5 +1445,67 @@ func TestRotatePhoto(t *testing.T) {
 	}
 	if b := got.Bounds(); b.Dx() != 20 || b.Dy() != 30 {
 		t.Fatalf("size after turning: %v", b)
+	}
+}
+
+func TestSoldLogEdits(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("sold@example.com")
+	pc := e.link(owner, "sports", "HWID-SL", "")
+	old := time.Now().AddDate(0, 0, -60).UTC().Format("2006-01-02T15:04:05")
+	recent := time.Now().AddDate(0, 0, -2).UTC().Format("2006-01-02T15:04:05")
+	push(t, pc,
+		ch("sold", uuid(971), 0, time.Now(), map[string]any{"player_name": "eBay Sale", "sale_price": 10, "shipping_charged": 1, "sale_date": recent}),
+		ch("sold", uuid(972), 0, time.Now(), map[string]any{"player_name": "S&S Sale", "sale_price": 20, "sale_date": recent, "marketplace_order_id": "ord-9|line-1"}),
+		ch("sold", uuid(973), 0, time.Now(), map[string]any{"player_name": "Show Sale", "sale_price": 5, "sale_date": old, "sold_outside_ebay": true}),
+		ch("sold", uuid(974), 0, time.Now(), map[string]any{"player_name": "Shipped", "sale_price": 7, "sale_date": recent, "tracking_number": "1Z"}))
+
+	names := func(q string) string {
+		res := owner.must(200, "GET", "/v1/inventory/sold?view=1&"+q, nil)
+		var n []string
+		for _, s := range res["sold"].([]any) {
+			n = append(n, s.(map[string]any)["data"].(map[string]any)["player_name"].(string))
+		}
+		sort.Strings(n)
+		return strings.Join(n, ",")
+	}
+	if got := names(""); got != "S&S Sale,Show Sale,eBay Sale" {
+		t.Fatalf("default view hides shipped: %s", got)
+	}
+	if got := names("days=30&shipped=1"); got != "S&S Sale,Shipped,eBay Sale" {
+		t.Fatalf("30 days with shipped: %s", got)
+	}
+	if got := names("where=slabs"); got != "S&S Sale" {
+		t.Fatalf("slabs only: %s", got)
+	}
+	if got := names("where=other"); got != "Show Sale" {
+		t.Fatalf("in person: %s", got)
+	}
+
+	// Edit notes, archive one.
+	out := owner.must(200, "PATCH", "/v1/inventory/sold/"+uuid(971), map[string]any{"fields": map[string]any{"notes": "Paid via PayPal", "archived": true}})
+	if d := out["data"].(map[string]any); d["notes"] != "Paid via PayPal" || d["archived"] != true {
+		t.Fatalf("edit: %v", d)
+	}
+	if got := names(""); got != "S&S Sale,Show Sale" {
+		t.Fatalf("archived hidden: %s", got)
+	}
+	owner.must(422, "PATCH", "/v1/inventory/sold/"+uuid(971), map[string]any{"fields": map[string]any{"ebay_order_id": "x"}})
+
+	// Mark shipped tells Slabs & Singles about its order.
+	owner.must(200, "PUT", "/v1/me/market-keys/slabs", map[string]any{"key": "ss_live_0123456789abcdefWXYZ"})
+	sh := owner.must(200, "POST", "/v1/inventory/sold/shipped", map[string]any{"ids": []string{uuid(972), uuid(973)}, "tracking": "9400 1111", "carrier": "USPS"})
+	if sh["marked"].(float64) != 2 || sh["slabs_orders"].(float64) != 1 || len(e.slabs.shipped) != 1 || e.slabs.shipped[0] != "ord-9:9400 1111" {
+		t.Fatalf("shipped: %v %v", sh, e.slabs.shipped)
+	}
+	if got := names(""); got != "" {
+		t.Fatalf("all shipped or archived now: %s", got)
+	}
+
+	// Delete a record; the PC hears about it.
+	owner.must(204, "DELETE", "/v1/inventory/sold/"+uuid(973), nil)
+	all := owner.must(200, "GET", "/v1/inventory/sold?all=1", nil)
+	if all["total"].(float64) != 3 {
+		t.Fatalf("after delete: %v", all["total"])
 	}
 }

@@ -91,6 +91,8 @@ export type SoldData = {
   sold_outside_ebay?: boolean;
   marketplace_order_id?: string | null;
   ebay_order_id?: string | null;
+  archived?: boolean;
+  ebay_listing_id?: string | null;
 };
 export type SoldPage = { edition: string; sold: { id: string; data: SoldData }[]; total: number; revenue: number; page: number; per_page: number };
 

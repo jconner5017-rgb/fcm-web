@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -123,6 +124,13 @@ func (c *Client) Upsert(ctx context.Context, key string, in Input, idem string) 
 	}
 	err := c.send(ctx, key, http.MethodPost, "/v1/listings", "application/json", body, idem, &out)
 	return out.Listing, out.Created, err
+}
+
+// MarkShipped tells the marketplace an order shipped, so the buyer gets the
+// tracking number (POST /v1/orders/{id}/ship).
+func (c *Client) MarkShipped(ctx context.Context, key, orderID, carrier, tracking string) error {
+	body, _ := json.Marshal(map[string]string{"carrier": carrier, "tracking_number": tracking})
+	return c.send(ctx, key, http.MethodPost, "/v1/orders/"+url.PathEscape(orderID)+"/ship", "application/json", body, "", nil)
 }
 
 // ---------------- the listing (SlabsListingInput) ----------------

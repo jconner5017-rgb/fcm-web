@@ -125,6 +125,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inventory/cards", requireAccount(s.handleInvCards))
 	mux.HandleFunc("GET /v1/inventory/cards/{id}", requireAccount(s.handleInvCard))
 	mux.HandleFunc("GET /v1/inventory/sold", requireAccount(s.handleInvSold))
+	mux.HandleFunc("PATCH /v1/inventory/sold/{id}", requireAccount(s.handleSoldEdit))
+	mux.HandleFunc("DELETE /v1/inventory/sold/{id}", requireAccount(s.handleSoldDelete))
+	mux.HandleFunc("POST /v1/inventory/sold/shipped", requireAccount(s.handleSoldShipped))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
 	mux.HandleFunc("GET /v1/inventory/tree", requireAccount(s.handleInvTree))
 	mux.HandleFunc("GET /v1/inventory/dashboard", requireAccount(s.handleInvDashboard))
@@ -1005,13 +1008,94 @@ func (s *Server) handleInvSold(w http.ResponseWriter, r *http.Request) {
 	}
 	v := r.URL.Query()
 	page, _ := strconv.Atoi(v.Get("page"))
-	out, err := s.inv.Sold(r.Context(), sess.Account.ID, ed, v.Get("q"), page, 0)
+	// The Sold Log page filters like the desktop (view=1); older callers get everything.
+	var f []inventory.SoldFilter
+	if v.Get("view") == "1" {
+		days, _ := strconv.Atoi(v.Get("days"))
+		f = append(f, inventory.SoldFilter{Days: days, Where: v.Get("where"), ShowShipped: v.Get("shipped") == "1", ShowArchived: v.Get("archived") == "1"})
+	}
+	per := 0
+	if v.Get("all") == "1" {
+		per = -1
+	}
+	out, err := s.inv.Sold(r.Context(), sess.Account.ID, ed, v.Get("q"), page, per, f...)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "sold": out.Sold, "total": out.Total, "revenue": out.Revenue,
 		"page": out.Page, "per_page": out.PerPage})
+}
+
+func (s *Server) handleSoldEdit(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	data, err := s.inv.EditSold(r.Context(), sess.Account.ID, r.PathValue("id"), in.Fields)
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": strings.ToLower(r.PathValue("id")), "data": data})
+}
+
+func (s *Server) handleSoldDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	sess, _ := currentSession(r)
+	if err := s.inv.DeleteSold(r.Context(), sess.Account.ID, r.PathValue("id")); err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSoldShipped is "Mark Selected as Shipped". Slabs & Singles orders
+// are marked shipped there too, so the buyer gets the tracking number.
+func (s *Server) handleSoldShipped(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		IDs      []string `json:"ids"`
+		Tracking string   `json:"tracking"`
+		Carrier  string   `json:"carrier"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.IDs) == 0 || len(in.IDs) > 500 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Pick the sales to mark shipped (up to 500).", nil)
+		return
+	}
+	sess, _ := currentSession(r)
+	res, err := s.inv.MarkShipped(r.Context(), sess.Account.ID, in.IDs, in.Tracking, in.Carrier)
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	var problems []string
+	if len(res.SlabsOrders) > 0 && s.lister != nil {
+		key, err := s.lister.Key(r.Context(), sess.Account.ID, "slabs")
+		if err != nil {
+			problems = append(problems, "Slabs & Singles wasn't told (add your Slabs & Singles key on the Account page, or mark it shipped on slabsnsingles.com).")
+		} else {
+			for _, o := range res.SlabsOrders {
+				if err := s.lister.Slabs.MarkShipped(r.Context(), key, o, strings.TrimSpace(in.Carrier), strings.TrimSpace(in.Tracking)); err != nil {
+					problems = append(problems, "Order "+o+": "+err.Error())
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"marked": res.Marked, "slabs_orders": len(res.SlabsOrders), "problems": problems})
 }
 
 // invWriteAllowed: edits from the website are sync, so they need the trial
