@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -269,15 +270,17 @@ func (s *Service) Summary(ctx context.Context, accountID, edition string) (Summa
 // ---------------- card list ----------------
 
 type Query struct {
-	Edition string
-	Box     string // box id, "none" for cards not in a box, "" for all
-	Row     string // slot row within Box
-	Status  string // NotForSale, Ready, EBA, EBF, "listed" (EBA or EBF), "" for all
-	Search  string
-	Sort    string // player, year, value, slot, updated, set
-	Desc    bool
-	Page    int // from 1
-	PerPage int
+	Edition   string
+	Sport     string // the card's sport / category, "" for all
+	Box       string // box id, "none" for cards not in a box, "" for all
+	Row       string // slot row within Box
+	Status    string // NotForSale, Ready, EBA, EBF, "listed" (EBA or EBF), "" for all
+	Search    string
+	Sort      string // player, year, value, slot, updated, set
+	Desc      bool
+	Page      int // from 1
+	PerPage   int
+	WithBacks bool // also sign back thumbnails
 }
 
 type CardRow struct {
@@ -287,6 +290,7 @@ type CardRow struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 	Data      json.RawMessage `json:"data"`
 	ThumbURL  string          `json:"thumb_url,omitempty"`
+	BackURL   string          `json:"back_thumb_url,omitempty"`
 }
 
 type CardPage struct {
@@ -302,7 +306,10 @@ var sorts = map[string]string{
 	"year":    `c.data->'year'`,
 	"value":   valueExpr,
 	"updated": `c.updated_at`,
-	"slot":    `lower(coalesce(b.data->>'name', '~')) %[1]s, length(coalesce(c.data->>'slot_row', '')) %[1]s, c.data->>'slot_row' %[1]s, c.data->'slot_number'`,
+	// Box (base name, then its "(cont. N)" number, like the desktop), row, slot.
+	"slot": `lower(split_part(coalesce(b.data->>'name', '~'), ' (cont. ', 1)) %[1]s,
+		coalesce(substring(b.data->>'name' from '\(cont\. (\d+)\)')::int, 1) %[1]s,
+		length(coalesce(c.data->>'slot_row', '')) %[1]s, c.data->>'slot_row' %[1]s, c.data->'slot_number'`,
 }
 
 // searchText is what a search word is matched against.
@@ -336,6 +343,9 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	add := func(cond string, v any) {
 		args = append(args, v)
 		where = append(where, fmt.Sprintf(cond, len(args)))
+	}
+	if q.Sport != "" {
+		add("coalesce(c.data->>'sport', '') = $%d", q.Sport)
 	}
 	switch {
 	case q.Box == "none":
@@ -400,23 +410,32 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	// One signed link per tile, straight to photo storage.
-	want := make([]string, len(out.Cards))
+	// Signed links straight to photo storage: the front thumbnail for every
+	// tile, and the back one too (the Boxes page shows both).
+	front := make([]string, len(out.Cards))
+	back := make([]string, len(out.Cards))
 	var ids []string
-	for i, c := range out.Cards {
-		p := photoIDs(c.Data, "front_thumb_photo_id", "front_photo_id")
-		if id := p["front_thumb_photo_id"]; id != "" {
-			want[i] = id
-		} else {
-			want[i] = p["front_photo_id"]
+	pick := func(p map[string]string, thumb, full string) string {
+		if id := p[thumb]; id != "" {
+			return id
 		}
-		if want[i] != "" {
-			ids = append(ids, want[i])
+		return p[full]
+	}
+	for i, c := range out.Cards {
+		p := photoIDs(c.Data, "front_thumb_photo_id", "front_photo_id", "back_thumb_photo_id", "back_photo_id")
+		front[i] = pick(p, "front_thumb_photo_id", "front_photo_id")
+		if q.WithBacks {
+			back[i] = pick(p, "back_thumb_photo_id", "back_photo_id")
+		}
+		for _, id := range []string{front[i], back[i]} {
+			if id != "" {
+				ids = append(ids, id)
+			}
 		}
 	}
 	urls := s.sign(ctx, accountID, ids)
 	for i := range out.Cards {
-		out.Cards[i].ThumbURL = urls[want[i]]
+		out.Cards[i].ThumbURL, out.Cards[i].BackURL = urls[front[i]], urls[back[i]]
 	}
 	if len(out.Cards) == 0 && q.Page > 1 {
 		// Past the end: report the total so the page can offer page 1.
@@ -533,4 +552,108 @@ func (s *Service) Sold(ctx context.Context, accountID, edition, search string, p
 		out.Sold = append(out.Sold, r)
 	}
 	return out, rows.Err()
+}
+
+// ---------------- the Boxes page: sport > box > row ----------------
+
+type TreeBox struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Label string `json:"label"` // "Box 2 — Basketball (cont. 2)", like the desktop
+	Cards int    `json:"cards"`
+	Rows  []Row  `json:"rows"`
+}
+
+type TreeSport struct {
+	Sport string    `json:"sport"`
+	Cards int       `json:"cards"`
+	Boxes []TreeBox `json:"boxes"`
+}
+
+// DisplayNumber is the desktop's box number: 1, or N for "... (cont. N)".
+func DisplayNumber(name string) int {
+	i := strings.Index(strings.ToLower(name), " (cont. ")
+	if i < 0 {
+		return 1
+	}
+	rest := name[i+len(" (cont. "):]
+	var n int
+	if _, err := fmt.Sscanf(rest, "%d)", &n); err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+// Tree groups the inventory like the desktop's Boxes window: by the card's
+// sport (category), then box, then row, with card counts.
+func (s *Service) Tree(ctx context.Context, accountID, edition string) ([]TreeSport, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT coalesce(c.data->>'sport', ''), coalesce(b.id::text, ''), coalesce(b.data->>'name', ''), coalesce(c.data->>'slot_row', ''), count(*)
+		FROM sync_cards c
+		LEFT JOIN sync_boxes b ON b.id = c.box_id AND b.account_id = c.account_id AND b.deleted_at IS NULL
+		WHERE c.account_id = $1 AND c.edition = $2 AND c.deleted_at IS NULL AND coalesce(c.status, '') <> $3
+		GROUP BY 1, 2, 3, 4`, accountID, edition, soldStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sports := map[string]*TreeSport{}
+	boxes := map[string]map[string]*TreeBox{}
+	for rows.Next() {
+		var sport, boxID, name, row string
+		var n int
+		if err := rows.Scan(&sport, &boxID, &name, &row, &n); err != nil {
+			return nil, err
+		}
+		if sport == "" {
+			sport = "Unsorted"
+		}
+		sp := sports[sport]
+		if sp == nil {
+			sp = &TreeSport{Sport: sport}
+			sports[sport] = sp
+			boxes[sport] = map[string]*TreeBox{}
+		}
+		sp.Cards += n
+		b := boxes[sport][boxID]
+		if b == nil {
+			b = &TreeBox{ID: boxID, Name: name, Rows: []Row{}}
+			switch {
+			case boxID == "":
+				b.ID, b.Label = "none", "Not in a box"
+			case strings.HasPrefix(strings.ToLower(name), "unsorted"):
+				b.Label = name
+			default:
+				b.Label = fmt.Sprintf("Box %d — %s", DisplayNumber(name), name)
+			}
+			boxes[sport][boxID] = b
+		}
+		b.Cards += n
+		if row != "" {
+			b.Rows = append(b.Rows, Row{Row: row, Cards: n})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]TreeSport, 0, len(sports))
+	for name, sp := range sports {
+		for _, b := range boxes[name] {
+			sort.Slice(b.Rows, func(i, j int) bool { return RowIndex(b.Rows[i].Row) < RowIndex(b.Rows[j].Row) })
+			sp.Boxes = append(sp.Boxes, *b)
+		}
+		sort.Slice(sp.Boxes, func(i, j int) bool {
+			a, c := sp.Boxes[i], sp.Boxes[j]
+			if (a.ID == "none") != (c.ID == "none") {
+				return c.ID == "none"
+			}
+			if da, dc := DisplayNumber(a.Name), DisplayNumber(c.Name); da != dc {
+				return da < dc
+			}
+			return strings.ToLower(a.Name) < strings.ToLower(c.Name)
+		})
+		out = append(out, *sp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Sport < out[j].Sport })
+	return out, nil
 }

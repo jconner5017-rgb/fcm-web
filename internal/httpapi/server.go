@@ -121,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inventory/cards/{id}", requireAccount(s.handleInvCard))
 	mux.HandleFunc("GET /v1/inventory/sold", requireAccount(s.handleInvSold))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
+	mux.HandleFunc("GET /v1/inventory/tree", requireAccount(s.handleInvTree))
 	mux.HandleFunc("PATCH /v1/inventory/cards/{id}", requireAccount(s.handleInvEdit))
 	mux.HandleFunc("POST /v1/inventory/cards/{id}/sold", requireAccount(s.handleInvMarkSold))
 	mux.HandleFunc("GET /v1/inventory/conflicts", requireAccount(s.handleInvConflicts))
@@ -952,8 +953,8 @@ func (s *Server) handleInvCards(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(v.Get("page"))
 	per, _ := strconv.Atoi(v.Get("per"))
 	out, err := s.inv.Cards(r.Context(), sess.Account.ID, inventory.Query{
-		Edition: ed, Box: v.Get("box"), Row: v.Get("row"), Status: v.Get("status"), Search: v.Get("q"),
-		Sort: v.Get("sort"), Desc: v.Get("dir") == "desc", Page: page, PerPage: per,
+		Edition: ed, Sport: v.Get("sport"), Box: v.Get("box"), Row: v.Get("row"), Status: v.Get("status"), Search: v.Get("q"),
+		Sort: v.Get("sort"), Desc: v.Get("dir") == "desc", Page: page, PerPage: per, WithBacks: v.Get("backs") == "1",
 	})
 	if err != nil {
 		s.internalError(w, r, err)
@@ -1298,4 +1299,19 @@ func (s *Server) handleDeviceAIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleInvTree(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	tree, err := s.inv.Tree(r.Context(), sess.Account.ID, ed)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "sports": tree})
 }

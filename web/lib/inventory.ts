@@ -51,7 +51,7 @@ export type CardData = {
 };
 
 // thumb_url / front_url / back_url: signed links straight to photo storage (fast, cacheable for the hour).
-export type CardRow = { id: string; box_id?: string; box_name?: string; updated_at: string; data: CardData; thumb_url?: string };
+export type CardRow = { id: string; box_id?: string; box_name?: string; updated_at: string; data: CardData; thumb_url?: string; back_thumb_url?: string };
 export type CardDetail = CardRow & { edition: string; version: number; front_url?: string; back_url?: string };
 
 export type InvSummary = {
@@ -184,4 +184,34 @@ export function href(base: string, cur: Params, change: Params = {}): string {
 /** First value of a Next.js search param. */
 export function one(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v[0] : v;
+}
+
+// ---------------- Boxes page ----------------
+
+export type TreeBox = { id: string; name: string; label: string; cards: number; rows: { row: string; cards: number }[] };
+export type TreeSport = { sport: string; cards: number; boxes: TreeBox[] };
+
+/** The desktop's location prefixes (LocationPrefixHelper), Sports and TCG. */
+const PREFIX: Record<string, string> = {
+  Basketball: "BK", Football: "FT", Baseball: "BL", Hockey: "HK", Soccer: "SC", Fighting: "UFC", Wrestling: "WW", Racing: "RC", Boxing: "BC",
+  Golf: "GF", Mma: "MA", Multisport: "MS", Tennis: "TN",
+  Entertainment: "EN", Superheroes: "SH", SciFi: "SF", Fantasy: "FN", Anime: "AN", Horror: "HR", Music: "MU", Historical: "HI", Novelty: "NV",
+  Mixed: "MX", Pokemon: "PK", Magic: "MG", YuGiOh: "YG", OnePiece: "OP", Lorcana: "LC", DragonBall: "DB", Digimon: "DG", FleshAndBlood: "FB",
+  FinalFantasy: "FF", StarWarsTcg: "SW", WeissSchwarz: "WS", Vanguard: "VG", Naruto: "NR", MetaZoo: "MZ", Riftbound: "RB", WorldOfWarcraft: "WC",
+  MyLittlePony: "MP", Sorcery: "SC", Netrunner: "NT", UniVersus: "UV", OtherTcg: "OT",
+};
+
+export function boxNumber(name: string): number {
+  const m = /\(cont\. (\d+)\)/i.exec(name);
+  return m ? Number(m[1]) : 1;
+}
+
+/** "BK1-A-07", exactly as FireCardManager shows a card's location. */
+export function locationCode(c: { box_name?: string; data: CardData }): string {
+  const { box_name: box } = c;
+  const { slot_row: row, slot_number: slot, sport } = c.data;
+  if (!box || !row || !slot) return "Unassigned";
+  const base = box.split(" (cont. ")[0].toLowerCase();
+  const kind = base.endsWith(" collection") ? "C" : base.endsWith(" lot box") ? "L" : "";
+  return `${PREFIX[sport ?? ""] ?? "GN"}${kind}${boxNumber(box)}-${row}-${String(slot).padStart(2, "0")}`;
 }

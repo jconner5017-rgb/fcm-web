@@ -853,6 +853,28 @@ func TestInventory(t *testing.T) {
 		t.Fatalf("past the end: %v", pg)
 	}
 
+	// The Boxes page tree: sport > box > row; and a sport filter on cards.
+	push(t, pc, ch("card", uuid(607), 0, now, map[string]any{"player_name": "Sport Card", "sport": "Basketball", "status": "Ready",
+		"box_id": boxA, "slot_row": "C", "slot_number": 1}),
+		ch("box", uuid(503), 0, now, map[string]any{"name": "Basketball (cont. 2)"}),
+		ch("card", uuid(608), 0, now, map[string]any{"player_name": "Cont Card", "sport": "Basketball", "status": "Ready",
+			"box_id": uuid(503), "slot_row": "A", "slot_number": 1}))
+	tree := owner.must(200, "GET", "/v1/inventory/tree", nil)["sports"].([]any)
+	var bk map[string]any
+	for _, s := range tree {
+		if s.(map[string]any)["sport"] == "Basketball" {
+			bk = s.(map[string]any)
+		}
+	}
+	if bk == nil || bk["cards"].(float64) != 2 || len(bk["boxes"].([]any)) != 2 ||
+		bk["boxes"].([]any)[0].(map[string]any)["label"] != "Box 1 — Basketball 1" ||
+		bk["boxes"].([]any)[1].(map[string]any)["label"] != "Box 2 — Basketball (cont. 2)" {
+		t.Fatalf("tree: %v", tree)
+	}
+	eq(names("/v1/inventory/cards?sport=Basketball"), "Cont Card", "Sport Card") // box "Basketball (cont. 2)" sorts before "Basketball 1"
+	push(t, pc, map[string]any{"entity": "card", "id": uuid(607), "base_version": 1, "deleted": true, "edited_at": now},
+		map[string]any{"entity": "card", "id": uuid(608), "base_version": 1, "deleted": true, "edited_at": now})
+
 	card := owner.must(200, "GET", "/v1/inventory/cards/"+uuid(601), nil)
 	if card["box_name"] != "Basketball 1" || card["data"].(map[string]any)["sku"] != "FCM-1471" {
 		t.Fatalf("card: %v", card)
