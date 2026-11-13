@@ -692,7 +692,7 @@ func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request, needAllowed 
 	}
 	if needAllowed && !a.SyncAllowed(s.now()) {
 		writeError(w, http.StatusPaymentRequired, "sync_inactive",
-			"Cloud sync is off: the free trial or the FireCardManager Web add-on has ended. The add-on is $20 with a 6-month FCM license or $40 with a 12-month one. The desktop app keeps working either way.", nil)
+			"Cloud sync is off: the free trial or the FireCardManager Web add-on has ended. It's $19.95 for 6 months or $39.95 for 12 with an FCM license. The desktop app keeps working either way.", nil)
 		return cloudsync.Device{}, auth.Account{}, false
 	}
 	return cloudsync.Device{ID: d.ID, AccountID: d.AccountID, Edition: d.Edition}, a, true
@@ -768,6 +768,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Months int    `json:"months"` // 6 or 12; 0 ends the add-on now
+		Plan   string `json:"plan"`   // addon (default) or standalone
 		Note   string `json:"note"`
 	}
 	if !decodeJSON(w, r, &in) {
@@ -788,7 +789,7 @@ func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": nil})
 		return
 	}
-	until, err := s.auth.ExtendWebAddon(r.Context(), id, in.Months, in.Note)
+	until, err := s.auth.ExtendWebAddon(r.Context(), id, in.Months, in.Plan, in.Note)
 	if validationError(w, err) {
 		return
 	}
@@ -800,8 +801,8 @@ func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.log.Info("web add-on extended", "account", id, "months", in.Months, "until", until)
-	writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": until})
+	s.log.Info("web add-on extended", "account", id, "months", in.Months, "plan", in.Plan, "until", until)
+	writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": until, "web_plan": map[bool]string{true: in.Plan, false: "addon"}[in.Plan != ""]})
 }
 
 func (s *Server) handleAdminTrial(w http.ResponseWriter, r *http.Request) {

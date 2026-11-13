@@ -20,7 +20,7 @@ export default async function AddCardPage() {
     <div className="mx-auto mt-6 max-w-[640px]">
       <Link href="/inventory" className="text-[14px] font-semibold text-muted hover:text-fire">&larr; Inventory</Link>
       <h1 className="mt-2 text-[26px] font-bold">Add a card</h1>
-      <p className="mb-5 mt-1 text-[14px] text-muted">Photograph the front and back. AI fills in the details for you to check, and the card syncs to your PC.</p>
+      <p className="mb-5 mt-1 text-[14px] text-muted">Photograph the front and back. AI fills in the details for you to check, and the card syncs to your PC. Got a stack? <Link href="/inventory/upload" className="font-semibold text-fire">Upload many photos at once</Link>.</p>
       {!me.sync_allowed ? (
         <p className="card">Adding cards needs the FireCardManager Web add-on (your free trial has ended).</p>
       ) : (

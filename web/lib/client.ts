@@ -59,4 +59,4 @@ export function addonActive(a: { web_addon_until?: string }): boolean {
   return !!a.web_addon_until && new Date(a.web_addon_until).getTime() > Date.now();
 }
 
-export const ADDON_PRICE = "$20 with a 6-month FCM license or $40 with a 12-month one";
+export const ADDON_PRICE = "$19.95 for 6 months or $39.95 for 12 with an FCM license ($29.95 / $49.95 on its own)";

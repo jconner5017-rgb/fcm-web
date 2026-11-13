@@ -19,7 +19,7 @@ import (
 
 const (
 	aiKeyPurpose     = "ai-key"
-	IdentifyPerHour  = 120
+	IdentifyPerHour  = 600 // the customer's own AI key pays; this only guards the server
 	RowSize          = 50 // cards per row, like the desktop's filing
 	maxIdentifyPhoto = 4 << 20
 )

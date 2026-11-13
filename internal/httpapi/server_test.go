@@ -635,11 +635,18 @@ func TestCardLimitAndTrial(t *testing.T) {
 		t.Fatalf("admin list: %v", list)
 	}
 
-	// The add-on (6 months for $20, 12 for $40) restores sync; a renewal adds on.
+	// The add-on ($19.95 / $39.95, or standalone $29.95 / $49.95) restores sync; a renewal adds on.
 	admin.must(422, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 3})
 	first := admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 6, "note": "Order 1001, $20"})
 	pc.must(200, "GET", "/v1/sync/pull", nil)
-	second := admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 12, "note": "Order 1002, $40"})
+	if first["web_plan"] != "addon" {
+		t.Fatalf("plan defaults to addon: %v", first)
+	}
+	admin.must(422, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 12, "plan": "gold"})
+	second := admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 12, "plan": "standalone", "note": "Order 1002, $49.95"})
+	if second["web_plan"] != "standalone" {
+		t.Fatalf("plan: %v", second)
+	}
 	t1, _ := time.Parse(time.RFC3339Nano, first["web_addon_until"].(string))
 	t2, _ := time.Parse(time.RFC3339Nano, second["web_addon_until"].(string))
 	if d := t2.Sub(t1); d < 360*24*time.Hour || d > 370*24*time.Hour {

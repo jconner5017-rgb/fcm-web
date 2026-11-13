@@ -49,7 +49,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
           the PC. Your boxes, cards and photos appear here after the first sync.
         </p>
         <p className="mt-4">
-          No PC? <Link href="/inventory/add" className="font-semibold text-fire">Add cards with your phone</Link>.
+          No PC? <Link href="/inventory/add" className="font-semibold text-fire">Add cards with your phone</Link> or <Link href="/inventory/upload" className="font-semibold text-fire">upload a stack of photos</Link>.
         </p>
       </div>
     );
@@ -73,6 +73,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
         </div>
         <div className="flex flex-wrap items-center gap-3">
         <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>
+          <Link href="/inventory/upload" className="btn-ghost !py-1.5">Upload photos</Link>
         {sum.editions.length > 1 && (
           <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
             {sum.editions.map((e) => (

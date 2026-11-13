@@ -19,7 +19,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
           <Link href="/signup" className="btn">Create account</Link>
           <Link href="/signin" className="btn-ghost">Sign in</Link>
         </div>
-        <p className="mt-6 text-[13px] text-muted">30 days of sync free. Then the web add-on: {ADDON_PRICE}. The desktop app keeps working either way.</p>
+        <p className="mt-6 text-[13px] text-muted">30 days of sync free. Then FireCardManager Web is {ADDON_PRICE}. A desktop app keeps working either way.</p>
       </section>
     );
   }
@@ -58,6 +58,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
           )}
           <Link href="/inventory" className="btn-ghost !py-1.5">Inventory</Link>
           <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>
+          <Link href="/inventory/upload" className="btn-ghost !py-1.5">Upload photos</Link>
         </div>
       </div>
       {!a.email_verified && (
@@ -80,12 +81,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
           ) : me.sync_allowed ? (
             <>
               <p className="mt-2 text-[18px] font-bold">Free trial: {trialLeft} day{trialLeft === 1 ? "" : "s"} left</p>
-              <p className="mt-1 text-[13px] text-muted">Ends {shortDate(a.sync_trial_ends_at)}. Then the web add-on: {ADDON_PRICE}.</p>
+              <p className="mt-1 text-[13px] text-muted">Ends {shortDate(a.sync_trial_ends_at)}. Then FireCardManager Web is {ADDON_PRICE}.</p>
             </>
           ) : (
             <>
               <p className="mt-2 text-[18px] font-bold text-bad">Sync is off</p>
-              <p className="mt-1 text-[13px] text-muted">The trial or add-on has ended. The web add-on is {ADDON_PRICE}. Contact FireCardManager to add it.</p>
+              <p className="mt-1 text-[13px] text-muted">The trial or plan has ended. FireCardManager Web is {ADDON_PRICE}. Contact FireCardManager to add it.</p>
             </>
           )}
         </div>

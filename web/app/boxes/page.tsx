@@ -51,6 +51,7 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
             </div>
           )}
           <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>
+          <Link href="/inventory/upload" className="btn-ghost !py-1.5">Upload photos</Link>
         </div>
       </div>
 

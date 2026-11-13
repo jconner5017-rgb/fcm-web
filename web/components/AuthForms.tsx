@@ -46,7 +46,7 @@ export function SignUpForm({ next }: { next?: string }) {
       {error && <p role="alert" className="text-bad">{error}</p>}
       <button type="submit" disabled={busy} className="btn w-full">{busy ? "Creating…" : "Create account"}</button>
       <p className="text-[13px] text-muted">
-        Your first 30 days of sync are free. After that, cloud sync is the web add-on: {ADDON_PRICE}. The desktop app keeps working either way.
+        Your first 30 days of sync are free. After that, FireCardManager Web is {ADDON_PRICE}. If you use the desktop app, it keeps working either way.
       </p>
       <p className="text-[14px]">Already have an account? <Link href={next ? `/signin?next=${encodeURIComponent(next)}` : "/signin"} className="font-semibold text-fire">Sign in</Link></p>
     </form>

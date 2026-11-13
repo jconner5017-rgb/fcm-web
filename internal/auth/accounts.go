@@ -41,11 +41,12 @@ type Account struct {
 	SyncTrialEndsAt time.Time  `json:"sync_trial_ends_at"`
 	WebAddonAt      *time.Time `json:"web_addon_at,omitempty"`    // first time the add-on was bought
 	WebAddonUntil   *time.Time `json:"web_addon_until,omitempty"` // the add-on runs until this date
+	WebPlan         string     `json:"web_plan,omitempty"`        // "addon" (with an FCM license) or "standalone"
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
-// AddonActive: the web add-on is paid up ($20 with a 6-month FCM license,
-// $40 with a 12-month one).
+// AddonActive: FireCardManager Web is paid up, as an add-on to an FCM
+// license ($19.95 / 6 months, $39.95 / 12) or on its own ($29.95 / $49.95).
 func (a Account) AddonActive(now time.Time) bool {
 	return a.WebAddonUntil != nil && now.Before(*a.WebAddonUntil)
 }
@@ -104,12 +105,12 @@ func validateSignup(email, password string) error {
 	return nil
 }
 
-const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, a.created_at`
+const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at`
 
 func scanAccount(row interface{ Scan(...any) error }, extra ...any) (Account, error) {
 	var a Account
 	var addon, until sql.NullTime
-	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.CreatedAt}, extra...)
+	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt}, extra...)
 	err := row.Scan(dst...)
 	if addon.Valid {
 		t := addon.Time
@@ -381,16 +382,25 @@ func (s *Service) ListAccounts(ctx context.Context, q string, limit int) ([]Admi
 	return out, rows.Err()
 }
 
-// AddonMonths are the add-on terms sold: 6 months ($20) and 12 months ($40),
-// matching the FCM license lengths.
+// AddonMonths are the terms sold: 6 and 12 months, matching the FCM license
+// lengths. WebPlans: "addon" ($19.95 / $39.95, with an FCM or FCM TCG license)
+// or "standalone" ($29.95 / $49.95, the web app on its own).
 var AddonMonths = map[int]bool{6: true, 12: true}
+
+var WebPlans = map[string]bool{"addon": true, "standalone": true}
 
 // ExtendWebAddon adds months to an account's web add-on, counted from its
 // current end date if it's still running (a renewal loses no days),
 // otherwise from now. note records the order (number, amount).
-func (s *Service) ExtendWebAddon(ctx context.Context, accountID string, months int, note string) (time.Time, error) {
+func (s *Service) ExtendWebAddon(ctx context.Context, accountID string, months int, plan, note string) (time.Time, error) {
 	if !AddonMonths[months] {
 		return time.Time{}, &ValidationError{Fields: map[string]string{"months": "Use 6 or 12 months."}}
+	}
+	if plan == "" {
+		plan = "addon"
+	}
+	if !WebPlans[plan] {
+		return time.Time{}, &ValidationError{Fields: map[string]string{"plan": "Use addon or standalone."}}
 	}
 	note = strings.TrimSpace(note)
 	if len(note) > 300 {
@@ -400,8 +410,8 @@ func (s *Service) ExtendWebAddon(ctx context.Context, accountID string, months i
 	err := s.DB.QueryRowContext(ctx, `UPDATE accounts SET
 			web_addon_at = coalesce(web_addon_at, $4),
 			web_addon_until = (CASE WHEN web_addon_until > $4 THEN web_addon_until ELSE $4 END) + make_interval(months => $2),
-			web_addon_note = coalesce(NULLIF($3, ''), web_addon_note), updated_at = now()
-		WHERE id::text = $1 RETURNING web_addon_until`, accountID, months, note, s.now()).Scan(&until)
+			web_addon_note = coalesce(NULLIF($3, ''), web_addon_note), web_plan = $5, updated_at = now()
+		WHERE id::text = $1 RETURNING web_addon_until`, accountID, months, note, s.now(), plan).Scan(&until)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, ErrNotFound
 	}

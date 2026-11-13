@@ -4,24 +4,30 @@ import { useState } from "react";
 import { addonActive, send, shortDate, when } from "@/lib/client";
 import type { AdminAccount } from "@/lib/types";
 
+const PRICES = {
+  addon: { 6: "$19.95", 12: "$39.95" } as Record<number, string>,
+  standalone: { 6: "$29.95", 12: "$49.95" } as Record<number, string>,
+};
+
 export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) {
   const [rows, setRows] = useState(initial);
   const [msg, setMsg] = useState("");
 
-  async function addon(a: AdminAccount, months: 0 | 6 | 12) {
+  async function addon(a: AdminAccount, months: 0 | 6 | 12, plan: "addon" | "standalone" = "addon") {
     let note = "";
     if (months > 0) {
-      const price = months === 6 ? "$20" : "$40";
-      const n = prompt(`Add ${months} months of the web add-on (${price}) for ${a.email}?\nNote (order number, amount):`, `${price} - `);
+      const price = PRICES[plan][months];
+      const what = plan === "addon" ? "the web add-on (with an FCM license)" : "FireCardManager Web on its own";
+      const n = prompt(`Add ${months} months of ${what} (${price}) for ${a.email}?\nNote (order number, amount):`, `${price} - `);
       if (n === null) return;
       note = n;
     } else if (!confirm(`End the web add-on for ${a.email} now? Sync stops unless their trial is still running.`)) {
       return;
     }
-    const r = await send<{ web_addon_until?: string | null }>("POST", `/v1/admin/accounts/${a.id}/addon`, { months, note });
+    const r = await send<{ web_addon_until?: string | null }>("POST", `/v1/admin/accounts/${a.id}/addon`, { months, plan, note });
     if (!r.ok) return setMsg(r.message);
     const until = r.data.web_addon_until ?? undefined;
-    setRows(rows.map((x) => (x.id === a.id ? { ...x, web_addon_until: until, web_addon_note: note || x.web_addon_note } : x)));
+    setRows(rows.map((x) => (x.id === a.id ? { ...x, web_addon_until: until, web_plan: months > 0 ? plan : x.web_plan, web_addon_note: note || x.web_addon_note } : x)));
     setMsg(months > 0 ? `Web add-on for ${a.email} now runs until ${shortDate(until)}.` : `Web add-on ended for ${a.email}.`);
   }
 
@@ -63,15 +69,19 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
                   </td>
                   <td className="py-2 pr-3">{shortDate(a.created_at)}</td>
                   <td className="py-2 pr-3">
-                    {addonActive(a) ? <span className="font-semibold text-go">Add-on to {shortDate(a.web_addon_until)}</span>
+                    {addonActive(a) ? <span className="font-semibold text-go">{a.web_plan === "standalone" ? "Standalone" : "Add-on"} to {shortDate(a.web_addon_until)}</span>
                       : trialOn ? `Trial to ${shortDate(a.sync_trial_ends_at)}` : <span className="text-bad">Off</span>}
                   </td>
                   <td className="num py-2 pr-3 text-right">{a.devices}</td>
                   <td className="num py-2 pr-3 text-right">{a.cards.toLocaleString()}</td>
                   <td className="py-2 pr-3">{when(a.last_sync)}</td>
                   <td className="py-2 text-right whitespace-nowrap">
-                    <button type="button" onClick={() => addon(a, 6)} className="btn !px-3 !py-1 text-[13px]">+6 mo ($20)</button>
-                    <button type="button" onClick={() => addon(a, 12)} className="btn ml-2 !px-3 !py-1 text-[13px]">+12 mo ($40)</button>
+                    <span className="mr-1 text-[12px] text-muted">Add-on</span>
+                    <button type="button" onClick={() => addon(a, 6)} className="btn !px-3 !py-1 text-[13px]">+6 mo</button>
+                    <button type="button" onClick={() => addon(a, 12)} className="btn ml-1 !px-3 !py-1 text-[13px]">+12 mo</button>
+                    <span className="ml-3 mr-1 text-[12px] text-muted">Standalone</span>
+                    <button type="button" onClick={() => addon(a, 6, "standalone")} className="btn !px-3 !py-1 text-[13px]">+6 mo</button>
+                    <button type="button" onClick={() => addon(a, 12, "standalone")} className="btn ml-1 !px-3 !py-1 text-[13px]">+12 mo</button>
                     {addonActive(a) && (
                       <button type="button" onClick={() => addon(a, 0)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">End</button>
                     )}
