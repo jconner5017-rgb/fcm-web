@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
@@ -138,8 +139,38 @@ func (s *Service) Confirm(ctx context.Context, d cloudsync.Device, photoIDs []st
 	if len(photoIDs) > MaxPerCall {
 		return nil, ErrTooMany
 	}
+	// Check the bucket for every upload at once (each HEAD is a round trip
+	// to R2), then record the results one by one.
+	type found struct {
+		size int64
+		ok   bool
+		err  error
+	}
+	heads := make([]found, len(photoIDs))
+	keys := make([]string, len(photoIDs))
+	for i, id := range photoIDs {
+		s.DB.QueryRowContext(ctx, `SELECT object_key FROM sync_photos WHERE id::text = $1 AND account_id = $2 AND status <> 'ready'`,
+			strings.ToLower(id), d.AccountID).Scan(&keys[i])
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
+	for i := range photoIDs {
+		if keys[i] == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			size, ok, err := s.Store.Head(ctx, keys[i])
+			heads[i] = found{size, ok, err}
+		}(i)
+	}
+	wg.Wait()
+
 	out := make([]Confirmed, 0, len(photoIDs))
-	for _, id := range photoIDs {
+	for i, id := range photoIDs {
 		res := Confirmed{PhotoID: id}
 		var key, cardID, side, status string
 		err := s.DB.QueryRowContext(ctx, `SELECT object_key, card_id, side, status FROM sync_photos
@@ -157,11 +188,15 @@ func (s *Service) Confirm(ctx context.Context, d cloudsync.Device, photoIDs []st
 			out = append(out, res)
 			continue
 		}
-		size, found, err := s.Store.Head(ctx, key)
-		if err != nil {
-			return nil, err
+		h := heads[i]
+		if key != keys[i] { // not checked above (it changed in between): check now
+			h.size, h.ok, h.err = s.Store.Head(ctx, key)
 		}
-		if !found || size <= 0 || size > MaxPhotoBytes {
+		if h.err != nil {
+			return nil, h.err
+		}
+		size := h.size
+		if !h.ok || size <= 0 || size > MaxPhotoBytes {
 			res.Status = "missing"
 			out = append(out, res)
 			continue
