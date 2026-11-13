@@ -83,6 +83,13 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
         )}
       </div>
 
+      {sum.conflicts > 0 && (
+        <p className="mt-4 rounded-lg border border-fire px-3 py-2 text-[14px]">
+          {sum.conflicts} edit{sum.conflicts === 1 ? "" : "s"} clashed with a change made somewhere else.{" "}
+          <Link href="/conflicts" className="font-semibold text-fire">Review conflicts</Link>
+        </p>
+      )}
+
       <div className="mt-5 grid gap-6 md:grid-cols-[240px_1fr]">
         <aside>
           {/* On a phone the box list folds away above the cards. */}
@@ -188,7 +195,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             </nav>
           )}
           <p className="mt-6 text-center text-[12px] text-muted">
-            {editionName(sum.edition)} · read-only for now. Edit cards in the desktop app; changes show here after the next sync.
+            {editionName(sum.edition)} · open a card to edit it or mark it sold. Changes on your PC show here after its next sync.
           </p>
         </section>
       </div>

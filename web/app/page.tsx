@@ -108,7 +108,7 @@ export default async function Home() {
             <div><p className="text-[12px] text-muted">Boxes</p><p className="num text-[20px] font-bold">{sum.boxes.length}</p></div>
             <div><p className="text-[12px] text-muted">Sold</p><Link href="/sold" className="num text-[20px] font-bold hover:text-fire">{sum.sold.toLocaleString()}</Link></div>
           </div>
-          <p className="mt-3 text-[13px] text-muted">Read-only for now: editing prices and marking cards sold from the web comes next.</p>
+          <p className="mt-3 text-[13px] text-muted">Open any card to edit it, move it or mark it sold. Your PC picks up the change on its next sync.</p>
         </section>
       )}
     </div>

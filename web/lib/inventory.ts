@@ -50,8 +50,9 @@ export type CardData = {
   back_thumb_photo_id?: string | null;
 };
 
-export type CardRow = { id: string; box_id?: string; box_name?: string; updated_at: string; data: CardData };
-export type CardDetail = CardRow & { edition: string; version: number };
+// thumb_url / front_url / back_url: signed links straight to photo storage (fast, cacheable for the hour).
+export type CardRow = { id: string; box_id?: string; box_name?: string; updated_at: string; data: CardData; thumb_url?: string };
+export type CardDetail = CardRow & { edition: string; version: number; front_url?: string; back_url?: string };
 
 export type InvSummary = {
   editions: { edition: string; cards: number }[];
@@ -62,6 +63,7 @@ export type InvSummary = {
   value: number;
   by_status: Record<string, number>;
   sold: number;
+  conflicts: number;
   last_sync?: string;
 };
 

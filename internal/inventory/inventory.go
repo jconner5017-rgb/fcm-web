@@ -9,6 +9,7 @@ package inventory
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 )
 
 const (
@@ -31,7 +34,50 @@ var (
 	statuses = map[string]bool{"NotForSale": true, "Ready": true, "EBA": true, "EBF": true}
 )
 
-type Service struct{ DB *sql.DB }
+type Service struct {
+	DB     *sql.DB
+	Sync   *cloudsync.Service // for edits from the website
+	Photos PhotoSigner        // signed photo links for the browser (nil: none)
+}
+
+// PhotoSigner makes browser links for card photos (photos.Service).
+type PhotoSigner interface {
+	BrowserURLs(ctx context.Context, accountID string, ids []string) (map[string]string, error)
+}
+
+// photoIDs reads photo id fields out of a card's data.
+func photoIDs(data []byte, keys ...string) map[string]string {
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal(data, &m)
+	out := map[string]string{}
+	for _, k := range keys {
+		var s string
+		if json.Unmarshal(m[k], &s) == nil && s != "" {
+			out[k] = strings.ToLower(s)
+		}
+	}
+	return out
+}
+
+func (s *Service) sign(ctx context.Context, accountID string, ids []string) map[string]string {
+	if s.Photos == nil || len(ids) == 0 {
+		return map[string]string{}
+	}
+	urls, err := s.Photos.BrowserURLs(ctx, accountID, ids)
+	if err != nil {
+		return map[string]string{} // the page falls back to the slower photo links
+	}
+	return urls
+}
+
+// NewID makes a random (version 4) UUID for a row the website creates.
+func NewID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
 
 // ---------------- summary ----------------
 
@@ -56,15 +102,16 @@ type Box struct {
 }
 
 type Summary struct {
-	Editions []Edition      `json:"editions"`
-	Edition  string         `json:"edition"`
-	Boxes    []Box          `json:"boxes"`
-	Unboxed  int            `json:"unboxed"`
-	Cards    int            `json:"cards"`
-	Value    float64        `json:"value"`
-	ByStatus map[string]int `json:"by_status"`
-	Sold     int            `json:"sold"`
-	LastSync *time.Time     `json:"last_sync,omitempty"`
+	Editions  []Edition      `json:"editions"`
+	Edition   string         `json:"edition"`
+	Boxes     []Box          `json:"boxes"`
+	Unboxed   int            `json:"unboxed"`
+	Cards     int            `json:"cards"`
+	Value     float64        `json:"value"`
+	ByStatus  map[string]int `json:"by_status"`
+	Sold      int            `json:"sold"`
+	Conflicts int            `json:"conflicts"`
+	LastSync  *time.Time     `json:"last_sync,omitempty"`
 }
 
 // Editions lists the apps (sports, tcg) the account has synced cards or
@@ -206,7 +253,8 @@ func (s *Service) Summary(ctx context.Context, accountID, edition string) (Summa
 	var last sql.NullTime
 	err = s.DB.QueryRowContext(ctx, `
 		SELECT (SELECT count(*) FROM sync_sold WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL),
-			(SELECT max(changed_at) FROM sync_changes WHERE account_id = $1)`, accountID, ed).Scan(&sum.Sold, &last)
+			(SELECT max(changed_at) FROM sync_changes WHERE account_id = $1),
+			(SELECT count(*) FROM sync_conflicts WHERE account_id = $1 AND resolved_at IS NULL)`, accountID, ed).Scan(&sum.Sold, &last, &sum.Conflicts)
 	if err != nil {
 		return sum, err
 	}
@@ -236,6 +284,7 @@ type CardRow struct {
 	BoxName   string          `json:"box_name,omitempty"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	Data      json.RawMessage `json:"data"`
+	ThumbURL  string          `json:"thumb_url,omitempty"`
 }
 
 type CardPage struct {
@@ -349,6 +398,24 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
+	// One signed link per tile, straight to photo storage.
+	want := make([]string, len(out.Cards))
+	var ids []string
+	for i, c := range out.Cards {
+		p := photoIDs(c.Data, "front_thumb_photo_id", "front_photo_id")
+		if id := p["front_thumb_photo_id"]; id != "" {
+			want[i] = id
+		} else {
+			want[i] = p["front_photo_id"]
+		}
+		if want[i] != "" {
+			ids = append(ids, want[i])
+		}
+	}
+	urls := s.sign(ctx, accountID, ids)
+	for i := range out.Cards {
+		out.Cards[i].ThumbURL = urls[want[i]]
+	}
 	if len(out.Cards) == 0 && q.Page > 1 {
 		// Past the end: report the total so the page can offer page 1.
 		err = s.DB.QueryRowContext(ctx, `SELECT count(*) FROM sync_cards c
@@ -368,6 +435,24 @@ type Card struct {
 	Version   int             `json:"version"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	Data      json.RawMessage `json:"data"`
+	FrontURL  string          `json:"front_url,omitempty"`
+	BackURL   string          `json:"back_url,omitempty"`
+}
+
+// CardWithPhotos is Card plus signed links for its front and back photos.
+func (s *Service) CardWithPhotos(ctx context.Context, accountID, id string) (Card, error) {
+	c, err := s.Card(ctx, accountID, id)
+	if err != nil {
+		return c, err
+	}
+	p := photoIDs(c.Data, "front_photo_id", "back_photo_id")
+	var ids []string
+	for _, v := range p {
+		ids = append(ids, v)
+	}
+	urls := s.sign(ctx, accountID, ids)
+	c.FrontURL, c.BackURL = urls[p["front_photo_id"]], urls[p["back_photo_id"]]
+	return c, nil
 }
 
 func (s *Service) Card(ctx context.Context, accountID, id string) (Card, error) {

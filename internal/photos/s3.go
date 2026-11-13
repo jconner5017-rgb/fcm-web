@@ -109,12 +109,21 @@ func (s *S3) client() *http.Client {
 // the query string, payload unsigned. Devices upload with it and browsers
 // show photos with it, so photo bytes never pass through the API server.
 func (s *S3) Presign(method, key string, expires time.Duration, now time.Time) string {
+	return s.PresignWith(method, key, expires, now, nil)
+}
+
+// PresignWith is Presign with extra signed query parameters, such as
+// response-cache-control for a GET.
+func (s *S3) PresignWith(method, key string, expires time.Duration, now time.Time, extra url.Values) string {
 	u, _ := url.Parse(s.objectURL(key))
 	now = now.UTC()
 	amzDate := now.Format("20060102T150405Z")
 	day := now.Format("20060102")
 	scope := day + "/" + s.Region + "/s3/aws4_request"
 	q := url.Values{}
+	for k, v := range extra {
+		q[k] = v
+	}
 	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	q.Set("X-Amz-Credential", s.AccessKey+"/"+scope)
 	q.Set("X-Amz-Date", amzDate)

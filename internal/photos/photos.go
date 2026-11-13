@@ -12,12 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
+	"github.com/lib/pq"
 )
 
 const (
@@ -327,4 +329,48 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// Browser links: made from the start of the current hour and good for two
+// hours, so a photo gets the same link all hour and the browser shows its
+// saved copy instead of downloading it again. That keeps storage reads (what
+// R2 charges for) down; R2 doesn't charge for the bytes themselves.
+const (
+	browserBucket = time.Hour
+	browserTTL    = 2 * time.Hour
+)
+
+// BrowserURLs signs links for the website to show the given photos of the
+// account's cards. Photos that aren't ready (or aren't the account's) are
+// left out.
+func (s *Service) BrowserURLs(ctx context.Context, accountID string, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if !s.Enabled() || len(ids) == 0 {
+		return out, nil
+	}
+	clean := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if uuidRE.MatchString(id) {
+			clean = append(clean, strings.ToLower(id))
+		}
+	}
+	if len(clean) == 0 {
+		return out, nil
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT id::text, object_key FROM sync_photos
+		WHERE account_id = $1 AND status = 'ready' AND id = ANY($2::uuid[])`, accountID, pq.Array(clean))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	start := s.now().UTC().Truncate(browserBucket)
+	extra := url.Values{"response-cache-control": {"private, max-age=3600, immutable"}}
+	for rows.Next() {
+		var id, key string
+		if err := rows.Scan(&id, &key); err != nil {
+			return nil, err
+		}
+		out[id] = s.Store.PresignWith("GET", key, browserTTL, start, extra)
+	}
+	return out, rows.Err()
 }

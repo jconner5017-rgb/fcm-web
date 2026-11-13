@@ -5,6 +5,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -66,7 +67,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB}, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos}, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -117,6 +118,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inventory/cards", requireAccount(s.handleInvCards))
 	mux.HandleFunc("GET /v1/inventory/cards/{id}", requireAccount(s.handleInvCard))
 	mux.HandleFunc("GET /v1/inventory/sold", requireAccount(s.handleInvSold))
+	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
+	mux.HandleFunc("PATCH /v1/inventory/cards/{id}", requireAccount(s.handleInvEdit))
+	mux.HandleFunc("POST /v1/inventory/cards/{id}/sold", requireAccount(s.handleInvMarkSold))
+	mux.HandleFunc("GET /v1/inventory/conflicts", requireAccount(s.handleInvConflicts))
+	mux.HandleFunc("POST /v1/inventory/conflicts/{id}", requireAccount(s.handleInvResolve))
 
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/addon", s.requireAdmin(s.handleAdminAddon))
@@ -948,7 +954,7 @@ func (s *Server) handleInvCards(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInvCard(w http.ResponseWriter, r *http.Request) {
 	sess, _ := currentSession(r)
-	c, err := s.inv.Card(r.Context(), sess.Account.ID, r.PathValue("id"))
+	c, err := s.inv.CardWithPhotos(r.Context(), sess.Account.ID, r.PathValue("id"))
 	if errors.Is(err, inventory.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "That card isn't in your online inventory.", nil)
 		return
@@ -976,4 +982,122 @@ func (s *Server) handleInvSold(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "sold": out.Sold, "total": out.Total, "revenue": out.Revenue,
 		"page": out.Page, "per_page": out.PerPage})
+}
+
+// invWriteAllowed: edits from the website are sync, so they need the trial
+// or the web add-on, like a PC's sync does.
+func (s *Server) invWriteAllowed(w http.ResponseWriter, r *http.Request) bool {
+	sess, _ := currentSession(r)
+	if !sess.Account.SyncAllowed(s.now()) {
+		writeError(w, http.StatusPaymentRequired, "sync_off",
+			"Editing on the website needs the FireCardManager Web add-on (your free trial has ended).", nil)
+		return false
+	}
+	return true
+}
+
+func (s *Server) invEditError(w http.ResponseWriter, r *http.Request, err error) {
+	var fe inventory.FieldErrors
+	switch {
+	case errors.As(err, &fe):
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Check the highlighted fields.", fe)
+	case errors.Is(err, inventory.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "That card isn't in your online inventory.", nil)
+	case errors.Is(err, inventory.ErrSoldAlready):
+		writeError(w, http.StatusConflict, "sold", "This card is already sold.", nil)
+	default:
+		s.internalError(w, r, err)
+	}
+}
+
+func (s *Server) handleInvBoxes(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	boxes, err := s.inv.Boxes(r.Context(), sess.Account.ID, r.URL.Query().Get("edition"))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"boxes": boxes})
+}
+
+func (s *Server) handleInvEdit(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		BaseVersion int                        `json:"base_version"`
+		Fields      map[string]json.RawMessage `json:"fields"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	out, err := s.inv.EditCard(r.Context(), sess.Account.ID, r.PathValue("id"), in.BaseVersion, in.Fields)
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleInvMarkSold(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		BaseVersion int `json:"base_version"`
+		inventory.Sale
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	id, err := s.inv.MarkSold(r.Context(), sess.Account.ID, r.PathValue("id"), in.BaseVersion, in.Sale, inventory.NewID())
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sold_id": id})
+}
+
+func (s *Server) handleInvConflicts(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	list, err := s.inv.Conflicts(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conflicts": list})
+}
+
+func (s *Server) handleInvResolve(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Use string `json:"use"` // "kept" or "lost"
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Use != "kept" && in.Use != "lost" {
+		writeError(w, http.StatusBadRequest, "bad_choice", "Choose which value to keep.", nil)
+		return
+	}
+	if in.Use == "lost" && !s.invWriteAllowed(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "That conflict is already resolved.", nil)
+		return
+	}
+	sess, _ := currentSession(r)
+	err = s.inv.ResolveConflict(r.Context(), sess.Account.ID, id, in.Use == "lost")
+	if errors.Is(err, inventory.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "That conflict is already resolved, or the card was deleted.", nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

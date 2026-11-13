@@ -16,7 +16,7 @@ function Status({ c }: { c: CardRow }) {
 }
 
 function Thumb({ c, className }: { c: CardRow; className: string }) {
-  const src = thumbUrl(c.data);
+  const src = c.thumb_url || thumbUrl(c.data);
   return src ? (
     // eslint-disable-next-line @next/next/no-img-element
     <img src={src} alt="" loading="lazy" decoding="async" className={`${className} bg-paper object-contain`} />

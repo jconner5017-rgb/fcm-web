@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
+import CardActions from "@/components/inventory/CardActions";
 import { editionName, shortDate, when } from "@/lib/client";
 import {
   STATUS_LABELS, flags, gradeText, liveText, locationText, money, one, photoUrl, seasonText, setLine, type CardDetail,
@@ -8,8 +9,8 @@ import {
 
 export const metadata = { title: "Card" };
 
-function Photo({ id, label }: { id?: string | null; label: string }) {
-  const src = photoUrl(id);
+function Photo({ id, url, label }: { id?: string | null; url?: string; label: string }) {
+  const src = url || photoUrl(id);
   return (
     <figure className="min-w-0 flex-1">
       {src ? (
@@ -57,6 +58,7 @@ export default async function CardPage({
   const res = await apiGet<CardDetail>(`/v1/inventory/cards/${encodeURIComponent(id)}`);
   if (res.status === 404) notFound();
   const c = res.data;
+  const boxes = c ? (await apiGet<{ boxes: { id: string; name: string }[] }>(`/v1/inventory/boxes?edition=${c.edition}`)).data?.boxes ?? [] : [];
   if (!c) return <p className="card mt-8">This card couldn&apos;t be loaded just now. Refresh the page in a minute.</p>;
   const d = c.data;
   const live = liveText(d);
@@ -67,8 +69,8 @@ export default async function CardPage({
       <Link href={back} className="text-[14px] font-semibold text-muted hover:text-fire">&larr; Back to inventory</Link>
       <div className="mt-4 grid gap-8 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <div className="flex gap-3">
-          <Photo id={d.front_photo_id} label="Front" />
-          <Photo id={d.back_photo_id} label="Back" />
+          <Photo id={d.front_photo_id} url={c.front_url} label="Front" />
+          <Photo id={d.back_photo_id} url={c.back_url} label="Back" />
         </div>
 
         <div className="min-w-0 space-y-5">
@@ -87,6 +89,8 @@ export default async function CardPage({
               )}
             </div>
           </div>
+
+          <CardActions card={c} boxes={boxes} />
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <div className="card !p-3">
@@ -149,7 +153,7 @@ export default async function CardPage({
           </section>
 
           <p className="text-[12px] text-muted">
-            {editionName(c.edition)} · added {shortDate(d.created_at)} · changed {when(c.updated_at)}. Edit this card in the desktop app; changes show here after the next sync.
+            {editionName(c.edition)} · added {shortDate(d.created_at)} · changed {when(c.updated_at)}. Changes made on your PC show here after its next sync.
           </p>
         </div>
       </div>

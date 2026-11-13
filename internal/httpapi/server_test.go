@@ -696,6 +696,28 @@ func TestPhotos(t *testing.T) {
 		}
 	}
 
+	// The inventory list carries a direct, signed link for each tile; it
+	// stays the same within the hour so the browser can reuse its copy.
+	tile := func() string {
+		return owner.must(200, "GET", "/v1/inventory/cards", nil)["cards"].([]any)[0].(map[string]any)["thumb_url"].(string)
+	}
+	u1 := tile()
+	if u1 != tile() || !strings.Contains(u1, "response-cache-control=") {
+		t.Fatalf("tile link: %s", u1)
+	}
+	got, err = http.Get(u1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(got.Body)
+	got.Body.Close()
+	if !bytes.Equal(body, jpeg) {
+		t.Fatalf("tile download: %d bytes", len(body))
+	}
+	if c := owner.must(200, "GET", "/v1/inventory/cards/"+card, nil); c["front_url"] == nil || c["back_url"] != nil {
+		t.Fatalf("card photo links: %v", c)
+	}
+
 	// Someone else's account can't see it.
 	stranger := e.link(e.signup("nosy@example.com"), "sports", "HWID-N", "")
 	stranger.must(404, "GET", "/v1/photos/"+photoID, nil)
@@ -817,5 +839,125 @@ func TestInventory(t *testing.T) {
 	}
 	if code, _ := e.browser().do("GET", "/v1/inventory/summary", nil); code != 401 {
 		t.Fatalf("signed out: %d", code)
+	}
+}
+
+func TestInventoryEdits(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("edit@example.com")
+	pc := e.link(owner, "sports", "HWID-E1", "")
+	now := time.Now()
+	boxA, boxB := uuid(511), uuid(512)
+	card, other, live := uuid(611), uuid(612), uuid(613)
+	push(t, pc,
+		ch("box", boxA, 0, now, map[string]any{"name": "Box A"}),
+		ch("box", boxB, 0, now, map[string]any{"name": "Box B"}),
+		ch("card", card, 0, now, map[string]any{"player_name": "Cole Anthony", "brand": "Panini", "set_name": "Prizm", "card_number": "12",
+			"condition": "Raw - NM", "year": 2023, "estimated_value": 3.12, "status": "Ready", "box_id": boxA, "slot_row": "A", "slot_number": 1,
+			"front_photo_id": uuid(901)}),
+		ch("card", other, 0, now, map[string]any{"player_name": "Max Strus", "status": "Ready", "box_id": boxB, "slot_row": "C", "slot_number": 4}),
+		ch("card", live, 0, now, map[string]any{"player_name": "Live One", "status": "EBF", "box_id": boxB, "slot_row": "C", "slot_number": 5}),
+	)
+	_, seq := pull(t, pc, 0)
+
+	// A price and status edit goes through and reaches the PC.
+	out := owner.must(200, "PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 1,
+		"fields": map[string]any{"sale_price": 4.999, "status": "NotForSale", "variety": "  Silver  "}})
+	d := out["card"].(map[string]any)["data"].(map[string]any)
+	if d["sale_price"].(float64) != 5 || d["status"] != "NotForSale" || d["variety"] != "Silver" || d["updated_at"] == nil {
+		t.Fatalf("edit: %v", d)
+	}
+	rows, _ := pull(t, pc, seq)
+	if f := rows[card]["fields"].(map[string]any); f["sale_price"].(float64) != 5 || rows[card]["from_device"] != nil && rows[card]["from_device"] != "" {
+		t.Fatalf("pulled: %v", rows[card])
+	}
+
+	// Bad values and fields are refused with reasons.
+	code, res := owner.do("PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 2,
+		"fields": map[string]any{"player_name": " ", "year": 20, "status": "Sold", "sku": "X", "slot_number": 1.5}})
+	f := res["error"].(map[string]any)["fields"].(map[string]any)
+	if code != 422 || len(f) != 5 {
+		t.Fatalf("validation: %d %v", code, res)
+	}
+	// Status can't change while live on eBay.
+	if code, _ := owner.do("PATCH", "/v1/inventory/cards/"+live, map[string]any{"base_version": 1, "fields": map[string]any{"status": "Ready"}}); code != 422 {
+		t.Fatalf("live status: %d", code)
+	}
+
+	// Moving into a taken slot is refused; a free one works.
+	code, res = owner.do("PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 2,
+		"fields": map[string]any{"box_id": boxB, "slot_row": "c", "slot_number": 4}})
+	if code != 422 || !strings.Contains(res["error"].(map[string]any)["fields"].(map[string]any)["slot_number"].(string), "Max Strus") {
+		t.Fatalf("taken slot: %d %v", code, res)
+	}
+	out = owner.must(200, "PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 2,
+		"fields": map[string]any{"box_id": boxB, "slot_row": "c", "slot_number": 6}})
+	if c := out["card"].(map[string]any); c["box_name"] != "Box B" || c["data"].(map[string]any)["slot_row"] != "C" {
+		t.Fatalf("move: %v", c)
+	}
+	if code, _ := owner.do("PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 3,
+		"fields": map[string]any{"box_id": uuid(999)}}); code != 422 {
+		t.Fatalf("unknown box: %d", code)
+	}
+
+	// A PC edit the website didn't see becomes a conflict when the website overwrites it.
+	push(t, pc, ch("card", card, 3, time.Now(), map[string]any{"estimated_value": 9}))
+	owner.must(200, "PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": 3, "fields": map[string]any{"estimated_value": 7}})
+	cs := owner.must(200, "GET", "/v1/inventory/conflicts", nil)["conflicts"].([]any)
+	if len(cs) != 1 {
+		t.Fatalf("conflicts: %v", cs)
+	}
+	k := cs[0].(map[string]any)
+	if k["field"] != "estimated_value" || k["kept"].(float64) != 7 || k["lost"].(float64) != 9 || k["name"] != "Cole Anthony" {
+		t.Fatalf("conflict: %v", k)
+	}
+	owner.must(204, "POST", fmt.Sprintf("/v1/inventory/conflicts/%d", int(k["id"].(float64))), map[string]any{"use": "lost"})
+	if v := owner.must(200, "GET", "/v1/inventory/cards/"+card, nil)["data"].(map[string]any)["estimated_value"].(float64); v != 9 {
+		t.Fatalf("after resolve: %v", v)
+	}
+	if cs := owner.must(200, "GET", "/v1/inventory/conflicts", nil)["conflicts"].([]any); len(cs) != 0 {
+		t.Fatalf("still open: %v", cs)
+	}
+
+	// Mark sold: a Sold Log entry with the card's details, the card Sold, inventory down by one.
+	v := int(owner.must(200, "GET", "/v1/inventory/cards/"+card, nil)["version"].(float64))
+	sold := owner.must(200, "POST", "/v1/inventory/cards/"+card+"/sold", map[string]any{"base_version": v, "sale_price": 20,
+		"shipping_charged": 0, "where": "in_person", "buyer": "Show buyer", "sale_date": time.Now().Format(time.RFC3339)})
+	soldID := sold["sold_id"].(string)
+	list := owner.must(200, "GET", "/v1/inventory/sold", nil)
+	sd := list["sold"].([]any)[0].(map[string]any)
+	sdd := sd["data"].(map[string]any)
+	if sd["id"] != soldID || sdd["player_name"] != "Cole Anthony" || sdd["sale_price"].(float64) != 20 || sdd["sold_outside_ebay"] != true ||
+		sdd["estimated_value_at_sale"].(float64) != 9 || sdd["card_id"] != card || sdd["front_photo_id"] != uuid(901) {
+		t.Fatalf("sold entry: %v", sdd)
+	}
+	cd := owner.must(200, "GET", "/v1/inventory/cards/"+card, nil)["data"].(map[string]any)
+	if cd["status"] != "Sold" || cd["sold_entry_id"] != soldID {
+		t.Fatalf("card after sale: %v", cd)
+	}
+	if s := owner.must(200, "GET", "/v1/inventory/summary", nil); s["cards"].(float64) != 2 || s["sold"].(float64) != 1 {
+		t.Fatalf("summary after sale: %v", s)
+	}
+	if code, _ := owner.do("POST", "/v1/inventory/cards/"+card+"/sold", map[string]any{"base_version": v + 1, "sale_price": 1, "where": "ebay"}); code != 409 {
+		t.Fatalf("sold twice: %d", code)
+	}
+	if code, _ := owner.do("PATCH", "/v1/inventory/cards/"+card, map[string]any{"base_version": v + 1, "fields": map[string]any{"sale_price": 1}}); code != 409 {
+		t.Fatalf("edit sold: %d", code)
+	}
+	rows, _ = pull(t, pc, seq)
+	if rows[soldID] == nil || rows[card]["fields"].(map[string]any)["status"] != "Sold" {
+		t.Fatalf("PC pull after sale: %v", rows)
+	}
+
+	// Other accounts can't touch it; without the trial or add-on, edits stop.
+	stranger := e.signup("edit2@example.com")
+	if code, _ := stranger.do("PATCH", "/v1/inventory/cards/"+other, map[string]any{"base_version": 1, "fields": map[string]any{"sale_price": 1}}); code != 404 {
+		t.Fatalf("stranger edit: %d", code)
+	}
+	if _, err := e.db.Exec(`UPDATE accounts SET sync_trial_ends_at = now() - interval '1 day' WHERE email = 'edit@example.com'`); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := owner.do("PATCH", "/v1/inventory/cards/"+other, map[string]any{"base_version": 1, "fields": map[string]any{"sale_price": 1}}); code != 402 {
+		t.Fatalf("no add-on: %d", code)
 	}
 }
