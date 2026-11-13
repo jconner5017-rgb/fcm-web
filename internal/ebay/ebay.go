@@ -21,14 +21,14 @@ import (
 	"time"
 )
 
-// Scopes asked for: listing (inventory), business policies and location
-// (account), orders (fulfillment) and the seller's user name (identity).
+// Scopes asked for, the same as FireCardManager desktop's (EbayEnvironment):
+// listing (inventory), business policies and location (account) and orders
+// (fulfillment). The user name lookup works only if the keyset also has
+// commerce.identity.readonly; without it the name is just left blank.
 var Scopes = []string{
-	"https://api.ebay.com/oauth/api_scope",
 	"https://api.ebay.com/oauth/api_scope/sell.inventory",
 	"https://api.ebay.com/oauth/api_scope/sell.account",
 	"https://api.ebay.com/oauth/api_scope/sell.fulfillment",
-	"https://api.ebay.com/oauth/api_scope/commerce.identity.readonly",
 }
 
 var (
