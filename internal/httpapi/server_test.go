@@ -786,7 +786,7 @@ func TestInventory(t *testing.T) {
 	eq(names("/v1/inventory/cards?status=listed"), "Max Strus")
 	eq(names("/v1/inventory/cards?q=fcm-1471"), "Cole Anthony")
 	eq(names("/v1/inventory/cards?q=basketball+prizm"), "Cole Anthony") // box name + set
-	eq(names("/v1/inventory/cards?q=100%25_"), "OG Anunoby")           // % and _ are literal
+	eq(names("/v1/inventory/cards?q=100%25_"), "OG Anunoby")            // % and _ are literal
 	eq(names("/v1/inventory/cards?q=nobody"))
 	eq(names("/v1/inventory/cards?edition=tcg"), "Charizard")
 	pg := owner.must(200, "GET", "/v1/inventory/cards?per=2&page=3", nil)
