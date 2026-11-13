@@ -2,6 +2,7 @@ import Link from "next/link";
 import { apiGet, getMe } from "@/lib/api";
 import { ADDON_PRICE, addonActive, editionName, shortDate, when } from "@/lib/client";
 import type { Device } from "@/lib/types";
+import { money, type InvSummary } from "@/lib/inventory";
 import ResendVerification from "@/components/ResendVerification";
 
 export default async function Home() {
@@ -22,7 +23,9 @@ export default async function Home() {
     );
   }
 
-  const devices = (await apiGet<{ devices: Device[] }>("/v1/devices")).data?.devices ?? [];
+  const [devRes, sumRes] = await Promise.all([apiGet<{ devices: Device[] }>("/v1/devices"), apiGet<InvSummary>("/v1/inventory/summary")]);
+  const devices = devRes.data?.devices ?? [];
+  const sum = sumRes.data;
   const a = me.account;
   const trialEnds = new Date(a.sync_trial_ends_at);
   const trialLeft = Math.ceil((trialEnds.getTime() - Date.now()) / 86400000);
@@ -93,12 +96,21 @@ export default async function Home() {
         </section>
       )}
 
-      <section className="card">
-        <h2 className="text-[18px] font-bold">Coming next</h2>
-        <p className="mt-2 text-muted">
-          Browsing your boxes and cards, search, price edits and marking cards sold from the web arrive in the next updates.
-        </p>
-      </section>
+      {sum && sum.editions.length > 0 && (
+        <section className="card">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-[18px] font-bold">Your inventory</h2>
+            <Link href="/inventory" className="btn !py-1.5">Browse cards</Link>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div><p className="text-[12px] text-muted">Cards</p><p className="num text-[20px] font-bold">{sum.cards.toLocaleString()}</p></div>
+            <div><p className="text-[12px] text-muted">Estimated value</p><p className="num text-[20px] font-bold">{money(sum.value)}</p></div>
+            <div><p className="text-[12px] text-muted">Boxes</p><p className="num text-[20px] font-bold">{sum.boxes.length}</p></div>
+            <div><p className="text-[12px] text-muted">Sold</p><Link href="/sold" className="num text-[20px] font-bold hover:text-fire">{sum.sold.toLocaleString()}</Link></div>
+          </div>
+          <p className="mt-3 text-[13px] text-muted">Read-only for now: editing prices and marking cards sold from the web comes next.</p>
+        </section>
+      )}
     </div>
   );
 }

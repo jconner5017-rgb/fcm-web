@@ -17,6 +17,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 )
 
@@ -46,6 +47,7 @@ type Server struct {
 	devices      *devices.Service
 	sync         *cloudsync.Service
 	photos       *photos.Service
+	inv          *inventory.Service
 	log          *slog.Logger
 	cookieSecure bool
 	sessionTTL   time.Duration
@@ -64,7 +66,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB}, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -110,6 +112,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/p/{file}", s.handlePublicPhoto)  // permanent link for Shopify/Whatnot imports (add-on)
 
 	// Admin (owner, with 2FA on)
+	// Inventory for the website (read-only for now).
+	mux.HandleFunc("GET /v1/inventory/summary", requireAccount(s.handleInvSummary))
+	mux.HandleFunc("GET /v1/inventory/cards", requireAccount(s.handleInvCards))
+	mux.HandleFunc("GET /v1/inventory/cards/{id}", requireAccount(s.handleInvCard))
+	mux.HandleFunc("GET /v1/inventory/sold", requireAccount(s.handleInvSold))
+
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/addon", s.requireAdmin(s.handleAdminAddon))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/trial", s.requireAdmin(s.handleAdminTrial))
@@ -894,4 +902,78 @@ func (s *Server) handlePublicPhoto(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	io.Copy(w, body)
+}
+
+// ---------------- inventory (website) ----------------
+
+// invEdition is the edition the request asked for, or the account's main one.
+func (s *Server) invEdition(r *http.Request, accountID string) (string, error) {
+	eds, err := s.inv.Editions(r.Context(), accountID)
+	if err != nil {
+		return "", err
+	}
+	return inventory.PickEdition(eds, r.URL.Query().Get("edition")), nil
+}
+
+func (s *Server) handleInvSummary(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	sum, err := s.inv.Summary(r.Context(), sess.Account.ID, r.URL.Query().Get("edition"))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
+}
+
+func (s *Server) handleInvCards(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	v := r.URL.Query()
+	page, _ := strconv.Atoi(v.Get("page"))
+	per, _ := strconv.Atoi(v.Get("per"))
+	out, err := s.inv.Cards(r.Context(), sess.Account.ID, inventory.Query{
+		Edition: ed, Box: v.Get("box"), Row: v.Get("row"), Status: v.Get("status"), Search: v.Get("q"),
+		Sort: v.Get("sort"), Desc: v.Get("dir") == "desc", Page: page, PerPage: per,
+	})
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "cards": out.Cards, "total": out.Total, "page": out.Page, "per_page": out.PerPage})
+}
+
+func (s *Server) handleInvCard(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	c, err := s.inv.Card(r.Context(), sess.Account.ID, r.PathValue("id"))
+	if errors.Is(err, inventory.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "That card isn't in your online inventory.", nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *Server) handleInvSold(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	v := r.URL.Query()
+	page, _ := strconv.Atoi(v.Get("page"))
+	out, err := s.inv.Sold(r.Context(), sess.Account.ID, ed, v.Get("q"), page, 0)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "sold": out.Sold, "total": out.Total, "revenue": out.Revenue,
+		"page": out.Page, "per_page": out.PerPage})
 }

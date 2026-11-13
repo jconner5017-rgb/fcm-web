@@ -20,6 +20,8 @@ export default async function Header() {
           {me ? (
             <>
               <Link href="/" className="hover:text-fire">Home</Link>
+              <Link href="/inventory" className="hover:text-fire">Inventory</Link>
+              <Link href="/sold" className="hover:text-fire">Sold</Link>
               <Link href="/devices" className="hover:text-fire">Linked PCs</Link>
               <Link href="/account" className="hover:text-fire">Account</Link>
               {me.account.is_admin && <Link href="/admin" className="hover:text-fire">Admin</Link>}

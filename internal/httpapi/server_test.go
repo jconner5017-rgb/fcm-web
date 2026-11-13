@@ -718,3 +718,104 @@ func TestPhotos(t *testing.T) {
 	}
 	pcA.must(404, "GET", "/v1/photos/"+photoID, nil) // the replaced photo is gone
 }
+
+func TestInventory(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("inv@example.com")
+	pc := e.link(owner, "sports", "HWID-I1", "")
+	tcg := e.link(owner, "tcg", "HWID-I2", "")
+	now := time.Now()
+	boxA, boxB := uuid(501), uuid(502)
+	push(t, pc,
+		ch("box", boxA, 0, now, map[string]any{"name": "Basketball 1"}),
+		ch("box", boxB, 0, now, map[string]any{"name": "Baseball 1"}),
+		ch("card", uuid(601), 0, now, map[string]any{"player_name": "Cole Anthony", "set_name": "Prizm", "year": 2023,
+			"estimated_value": 3.12, "status": "Ready", "box_id": boxA, "slot_row": "A", "slot_number": 2, "sku": "FCM-1471"}),
+		ch("card", uuid(602), 0, now, map[string]any{"player_name": "Max Strus", "set_name": "Hoops", "year": 2024,
+			"estimated_value": 5, "status": "EBF", "box_id": boxA, "slot_row": "A", "slot_number": 1}),
+		ch("card", uuid(603), 0, now, map[string]any{"player_name": "OG Anunoby", "set_name": "Donruss 100%_x", "year": 2021,
+			"estimated_value": 15, "status": "Ready", "box_id": boxA, "slot_row": "B", "slot_number": 1}),
+		ch("card", uuid(604), 0, now, map[string]any{"player_name": "Shohei Ohtani", "year": 2018, "estimated_value": 40,
+			"status": "NotForSale", "box_id": boxB, "slot_row": "A", "slot_number": 1}),
+		ch("card", uuid(605), 0, now, map[string]any{"player_name": "Loose Card", "status": "Ready"}),
+		ch("card", uuid(606), 0, now, map[string]any{"player_name": "Gone Card", "status": "Sold", "box_id": boxA}),
+		ch("sold", uuid(701), 0, now, map[string]any{"player_name": "Gone Card", "sale_price": 12.5, "sale_date": "2026-11-01T00:00:00"}),
+		ch("sold", uuid(702), 0, now, map[string]any{"player_name": "Other Sale", "sale_price": 2, "sale_date": "2026-11-05T00:00:00"}),
+	)
+	push(t, tcg, ch("card", uuid(801), 0, now, map[string]any{"player_name": "Charizard", "status": "Ready"}))
+
+	sum := owner.must(200, "GET", "/v1/inventory/summary", nil)
+	if sum["edition"] != "sports" || sum["cards"].(float64) != 5 || sum["unboxed"].(float64) != 1 || sum["sold"].(float64) != 2 {
+		t.Fatalf("summary: %v", sum)
+	}
+	if v := sum["value"].(float64); v < 63.11 || v > 63.13 {
+		t.Fatalf("value %v", v)
+	}
+	boxes := sum["boxes"].([]any)
+	first := boxes[0].(map[string]any) // sorted by name: Baseball 1 first
+	second := boxes[1].(map[string]any)
+	if first["name"] != "Baseball 1" || second["cards"].(float64) != 3 || len(second["rows"].([]any)) != 2 {
+		t.Fatalf("boxes: %v", boxes)
+	}
+	if len(sum["editions"].([]any)) != 2 {
+		t.Fatalf("editions: %v", sum["editions"])
+	}
+	if s := owner.must(200, "GET", "/v1/inventory/summary?edition=tcg", nil); s["cards"].(float64) != 1 {
+		t.Fatalf("tcg summary: %v", s)
+	}
+
+	names := func(path string) []string {
+		out := owner.must(200, "GET", path, nil)
+		var n []string
+		for _, c := range out["cards"].([]any) {
+			n = append(n, c.(map[string]any)["data"].(map[string]any)["player_name"].(string))
+		}
+		return n
+	}
+	eq := func(got []string, want ...string) {
+		t.Helper()
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+	// Default order: by box, row, slot; loose cards last.
+	eq(names("/v1/inventory/cards"), "Shohei Ohtani", "Max Strus", "Cole Anthony", "OG Anunoby", "Loose Card")
+	eq(names("/v1/inventory/cards?box="+boxA+"&row=A"), "Max Strus", "Cole Anthony")
+	eq(names("/v1/inventory/cards?box=none"), "Loose Card")
+	eq(names("/v1/inventory/cards?sort=value&dir=desc"), "Shohei Ohtani", "OG Anunoby", "Max Strus", "Cole Anthony", "Loose Card")
+	eq(names("/v1/inventory/cards?status=listed"), "Max Strus")
+	eq(names("/v1/inventory/cards?q=fcm-1471"), "Cole Anthony")
+	eq(names("/v1/inventory/cards?q=basketball+prizm"), "Cole Anthony") // box name + set
+	eq(names("/v1/inventory/cards?q=100%25_"), "OG Anunoby")           // % and _ are literal
+	eq(names("/v1/inventory/cards?q=nobody"))
+	eq(names("/v1/inventory/cards?edition=tcg"), "Charizard")
+	pg := owner.must(200, "GET", "/v1/inventory/cards?per=2&page=3", nil)
+	if pg["total"].(float64) != 5 || len(pg["cards"].([]any)) != 1 {
+		t.Fatalf("paging: %v", pg)
+	}
+	if pg = owner.must(200, "GET", "/v1/inventory/cards?per=2&page=9", nil); pg["total"].(float64) != 5 {
+		t.Fatalf("past the end: %v", pg)
+	}
+
+	card := owner.must(200, "GET", "/v1/inventory/cards/"+uuid(601), nil)
+	if card["box_name"] != "Basketball 1" || card["data"].(map[string]any)["sku"] != "FCM-1471" {
+		t.Fatalf("card: %v", card)
+	}
+	sold := owner.must(200, "GET", "/v1/inventory/sold", nil)
+	if sold["total"].(float64) != 2 || sold["revenue"].(float64) != 14.5 ||
+		sold["sold"].([]any)[0].(map[string]any)["data"].(map[string]any)["player_name"] != "Other Sale" {
+		t.Fatalf("sold: %v", sold)
+	}
+
+	// Another account sees none of it.
+	other := e.signup("inv2@example.com")
+	if code, _ := other.do("GET", "/v1/inventory/cards/"+uuid(601), nil); code != 404 {
+		t.Fatalf("other account card: %d", code)
+	}
+	if s := other.must(200, "GET", "/v1/inventory/summary", nil); s["cards"].(float64) != 0 {
+		t.Fatalf("other summary: %v", s)
+	}
+	if code, _ := e.browser().do("GET", "/v1/inventory/summary", nil); code != 401 {
+		t.Fatalf("signed out: %d", code)
+	}
+}
