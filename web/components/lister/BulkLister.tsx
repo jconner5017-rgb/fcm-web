@@ -232,8 +232,7 @@ export default function BulkLister({ edition, sports, hasKey }: { edition: strin
 
           {!hasKey && (
             <p className="rounded-lg border border-fire px-3 py-2 text-[13px]">
-              Add your Slabs &amp; Singles API key on the <a href="/account#market-keys" className="font-semibold text-fire">Account page</a> first (or link a PC
-              that has one in FireCardManager).
+              Add a Slabs &amp; Singles key made <b>for FireCardManager Web</b> on the <a href="/account#market-keys" className="font-semibold text-fire">Account page</a> first.
             </p>
           )}
           {error && <p role="alert" className="text-[13px] text-bad">{error}</p>}

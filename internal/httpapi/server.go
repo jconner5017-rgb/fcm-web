@@ -1403,8 +1403,9 @@ func (s *Server) handleMarketKeyDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleDeviceMarketKey: a linked PC sends its Slabs & Singles key and
-// package defaults (an empty key: removed there).
+// handleDeviceMarketKey: a linked PC sends its Slabs & Singles package
+// defaults. Any key it sends is ignored: the website uses its own key (made
+// "for FireCardManager Web"), so it never stands in for the desktop app.
 func (s *Server) handleDeviceMarketKey(w http.ResponseWriter, r *http.Request) {
 	if !s.listerOn(w) {
 		return
@@ -1421,13 +1422,11 @@ func (s *Server) handleDeviceMarketKey(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	var err error
-	if strings.TrimSpace(in.Key) == "" {
-		err = s.lister.DeleteKey(r.Context(), d.AccountID, in.Market, "pc")
-	} else {
-		err = s.lister.SaveKey(r.Context(), d.AccountID, in.Market, in.Key, in.Settings, "pc", d.ID)
+	if in.Market != "slabs" {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "unknown marketplace", nil)
+		return
 	}
-	if err != nil {
+	if err := s.lister.SaveSettings(r.Context(), d.AccountID, in.Market, in.Settings); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "invalid", err.Error(), nil)
 		return
 	}
@@ -1485,7 +1484,7 @@ func (s *Server) handleListerStart(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, lister.ErrNoKey):
 		writeError(w, http.StatusConflict, "no_market_key",
-			"Add your Slabs & Singles API key on the Account page (or link a PC that has one in FireCardManager).", nil)
+			"Add a Slabs & Singles key made for FireCardManager Web on the Account page.", nil)
 	case errors.Is(err, lister.ErrNoCards):
 		writeError(w, http.StatusUnprocessableEntity, "no_cards", "Pick at least one card that's still in your inventory.", nil)
 	case err != nil:

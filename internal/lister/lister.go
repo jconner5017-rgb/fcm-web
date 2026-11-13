@@ -124,10 +124,22 @@ func (s *Service) Keys(ctx context.Context, accountID string) ([]KeyInfo, error)
 	return out, rows.Err()
 }
 
+// SaveSettings stores a linked PC's marketplace defaults (package, weights).
+func (s *Service) SaveSettings(ctx context.Context, accountID, market string, settings json.RawMessage) error {
+	if len(settings) == 0 || !json.Valid(settings) {
+		settings = json.RawMessage("{}")
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO account_market_settings (account_id, market, settings, updated_at) VALUES ($1, $2, $3, now())
+		ON CONFLICT (account_id, market) DO UPDATE SET settings = EXCLUDED.settings, updated_at = now()`, accountID, market, string(settings))
+	return err
+}
+
+// key is the website's own key for the marketplace, with the PC's defaults.
 func (s *Service) key(ctx context.Context, accountID, market string) (string, json.RawMessage, error) {
 	var box, settings []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT key_enc, settings FROM account_market_keys WHERE account_id = $1 AND market = $2`,
-		accountID, market).Scan(&box, &settings)
+	err := s.DB.QueryRowContext(ctx, `SELECT k.key_enc, coalesce(m.settings, k.settings) FROM account_market_keys k
+		LEFT JOIN account_market_settings m ON m.account_id = k.account_id AND m.market = k.market
+		WHERE k.account_id = $1 AND k.market = $2`, accountID, market).Scan(&box, &settings)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil, ErrNoKey
 	}

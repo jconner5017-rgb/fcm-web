@@ -1199,10 +1199,16 @@ func TestBulkListerSlabs(t *testing.T) {
 	if code, res := owner.do("POST", "/v1/lister/jobs", map[string]any{"market": "slabs", "card_ids": []string{good}}); code != 409 || errCode(res) != "no_market_key" {
 		t.Fatalf("no key: %d %v", code, res)
 	}
-	pc.must(204, "POST", "/v1/devices/market-key", map[string]any{"market": "slabs", "key": "ss_live_0123456789abcdefWXYZ",
+	// The PC sends only its package defaults (a key it sends is ignored);
+	// the website's own key is entered on the Account page.
+	pc.must(204, "POST", "/v1/devices/market-key", map[string]any{"market": "slabs", "key": "ss_key_desktopkey0123456789",
 		"settings": map[string]any{"package_mode": "auto", "raw_weight_oz": 1.5, "graded_weight_oz": 3}})
+	if keys := owner.must(200, "GET", "/v1/me/market-keys", nil)["keys"].([]any); len(keys) != 0 {
+		t.Fatalf("PC key stored: %v", keys)
+	}
+	owner.must(200, "PUT", "/v1/me/market-keys/slabs", map[string]any{"key": "ss_live_0123456789abcdefWXYZ"})
 	k := owner.must(200, "GET", "/v1/me/market-keys", nil)["keys"].([]any)[0].(map[string]any)
-	if k["last4"] != "WXYZ" || k["source"] != "pc" {
+	if k["last4"] != "WXYZ" || k["source"] != "web" {
 		t.Fatalf("key: %v", k)
 	}
 

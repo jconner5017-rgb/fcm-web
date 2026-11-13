@@ -26,7 +26,7 @@ export default function MarketKeyForm({ initial }: { initial: MarketKey | null }
   }
 
   async function remove() {
-    if (!confirm("Remove the Slabs & Singles key you entered here? A key from a linked PC is used again on its next sync.")) return;
+    if (!confirm("Remove the Slabs & Singles key? The Bulk Lister can't list until you add one again.")) return;
     const r = await send("DELETE", "/v1/me/market-keys/slabs");
     if (!r.ok) return setError(r.message);
     setKey(null);
@@ -36,23 +36,24 @@ export default function MarketKeyForm({ initial }: { initial: MarketKey | null }
   return (
     <div className="mt-2 space-y-3 text-[14px]">
       <p className="text-muted">
-        Lets the Bulk Lister put cards on Slabs &amp; Singles. Create a key on slabsnsingles.com under Seller hub &gt; Connect FCM. Stored encrypted and never shown again.
+        Lets the Bulk Lister put cards on Slabs &amp; Singles. On slabsnsingles.com go to Seller hub &gt; Connect FireCardManager, choose
+        <b> For: FireCardManager Web</b>, create the key and paste it here. Use a separate key from the desktop app&apos;s, so each can be revoked on its own.
+        Stored encrypted and never shown again. Your package and weight settings come from FireCardManager on your PC.
       </p>
       {key && !editing && (
         <div className="rounded-lg border border-line px-3 py-2">
           <p><b>Slabs &amp; Singles</b> key ending <span className="font-mono">{key.last4}</span></p>
           <p className="text-[13px] text-muted">
-            {key.source === "pc" ? `From FireCardManager on ${key.device_name || "your PC"} (with its package settings)` : "Entered here"} · {shortDate(key.updated_at)}
+            Entered here · {shortDate(key.updated_at)}
           </p>
           <div className="mt-2 flex gap-2">
             <button type="button" className="btn-ghost !py-1 text-[13px]" onClick={() => setEditing(true)}>Use a different key</button>
-            {key.source === "web" && <button type="button" className="btn-ghost !py-1 text-[13px] text-bad" onClick={remove}>Remove</button>}
+            <button type="button" className="btn-ghost !py-1 text-[13px] text-bad" onClick={remove}>Remove</button>
           </div>
         </div>
       )}
       {editing && (
         <form onSubmit={save} className="space-y-3">
-          {!key && <p>Have a Slabs &amp; Singles key in FireCardManager on a linked PC? It comes over by itself. Or enter one here:</p>}
           <label className="block font-semibold">
             API key
             <input className="field font-mono" value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" spellCheck={false} required />
