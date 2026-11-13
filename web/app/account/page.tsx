@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getMe } from "@/lib/api";
-import { shortDate } from "@/lib/client";
+import { addonActive, shortDate } from "@/lib/client";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
 
@@ -19,7 +19,7 @@ export default async function AccountPage() {
         <p><span className="text-muted">Member since:</span> {shortDate(a.created_at)}</p>
         <p>
           <span className="text-muted">Cloud sync:</span>{" "}
-          {a.web_addon_at ? `web add-on (since ${shortDate(a.web_addon_at)})` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "trial ended"}
+          {addonActive(a) ? `web add-on until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
         </p>
       </section>
       <section className="card">

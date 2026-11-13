@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { apiGet, getMe } from "@/lib/api";
-import { editionName, shortDate, when } from "@/lib/client";
+import { ADDON_PRICE, addonActive, editionName, shortDate, when } from "@/lib/client";
 import type { Device } from "@/lib/types";
 import ResendVerification from "@/components/ResendVerification";
 
@@ -17,7 +17,7 @@ export default async function Home() {
           <Link href="/signup" className="btn">Create account</Link>
           <Link href="/signin" className="btn-ghost">Sign in</Link>
         </div>
-        <p className="mt-6 text-[13px] text-muted">30 days of sync free, then a one-time $20 add-on. The desktop app keeps working either way.</p>
+        <p className="mt-6 text-[13px] text-muted">30 days of sync free. Then the web add-on: {ADDON_PRICE}. The desktop app keeps working either way.</p>
       </section>
     );
   }
@@ -40,17 +40,20 @@ export default async function Home() {
       <div className="grid gap-4 md:grid-cols-3">
         <div className="card">
           <p className="text-[13px] font-semibold uppercase tracking-wide text-muted">Cloud sync</p>
-          {a.web_addon_at ? (
-            <p className="mt-2 text-[18px] font-bold text-go">Active: web add-on</p>
+          {addonActive(a) ? (
+            <>
+              <p className="mt-2 text-[18px] font-bold text-go">Web add-on active</p>
+              <p className="mt-1 text-[13px] text-muted">Runs until {shortDate(a.web_addon_until)}. Renew along with your FCM license.</p>
+            </>
           ) : me.sync_allowed ? (
             <>
               <p className="mt-2 text-[18px] font-bold">Free trial: {trialLeft} day{trialLeft === 1 ? "" : "s"} left</p>
-              <p className="mt-1 text-[13px] text-muted">Ends {shortDate(a.sync_trial_ends_at)}. Then a one-time $20 add-on.</p>
+              <p className="mt-1 text-[13px] text-muted">Ends {shortDate(a.sync_trial_ends_at)}. Then the web add-on: {ADDON_PRICE}.</p>
             </>
           ) : (
             <>
-              <p className="mt-2 text-[18px] font-bold text-bad">Trial ended</p>
-              <p className="mt-1 text-[13px] text-muted">Add the one-time $20 web add-on to keep syncing. Contact FireCardManager to add it.</p>
+              <p className="mt-2 text-[18px] font-bold text-bad">Sync is off</p>
+              <p className="mt-1 text-[13px] text-muted">The trial or add-on has ended. The web add-on is {ADDON_PRICE}. Contact FireCardManager to add it.</p>
             </>
           )}
         </div>

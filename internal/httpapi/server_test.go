@@ -570,10 +570,24 @@ func TestCardLimitAndTrial(t *testing.T) {
 		t.Fatalf("admin list: %v", list)
 	}
 
-	// Turning on the one-time add-on restores sync.
-	admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"on": true, "note": "Order 1001, $20"})
+	// The add-on (6 months for $20, 12 for $40) restores sync; a renewal adds on.
+	admin.must(422, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 3})
+	first := admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 6, "note": "Order 1001, $20"})
 	pc.must(200, "GET", "/v1/sync/pull", nil)
-	admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"on": false})
+	second := admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 12, "note": "Order 1002, $40"})
+	t1, _ := time.Parse(time.RFC3339Nano, first["web_addon_until"].(string))
+	t2, _ := time.Parse(time.RFC3339Nano, second["web_addon_until"].(string))
+	if d := t2.Sub(t1); d < 360*24*time.Hour || d > 370*24*time.Hour {
+		t.Fatalf("renewal should add 12 months to the current end: %v -> %v", t1, t2)
+	}
+	if st := pc.must(200, "GET", "/v1/sync/status", nil); st["web_addon"] != true {
+		t.Fatalf("status: %v", st)
+	}
+	e.db.Exec(`UPDATE accounts SET web_addon_until = now() - interval '1 day' WHERE id = $1`, acct)
+	pc.must(402, "GET", "/v1/sync/pull", nil) // the add-on ran out
+	admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 6})
+	pc.must(200, "GET", "/v1/sync/pull", nil)
+	admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/addon", map[string]any{"months": 0})
 	pc.must(402, "GET", "/v1/sync/pull", nil)
 	admin.must(200, "POST", "/v1/admin/accounts/"+acct+"/trial", map[string]any{"until": time.Now().AddDate(0, 0, 7).Format("2006-01-02")})
 	pc.must(200, "GET", "/v1/sync/pull", nil)
@@ -666,7 +680,7 @@ func TestPhotos(t *testing.T) {
 	if st := pcA.must(200, "GET", "/v1/sync/status", nil); st["photo_links"] != false {
 		t.Fatalf("status photo_links without add-on: %v", st["photo_links"])
 	}
-	e.db.Exec(`UPDATE accounts SET web_addon_at = now() WHERE email = 'photos@example.com'`)
+	e.db.Exec(`UPDATE accounts SET web_addon_until = now() + interval '6 months' WHERE email = 'photos@example.com'`)
 	pub, _ = http.Get(e.srv.URL + "/v1/p/" + strings.ToUpper(photoID) + ".jpg")
 	pubBody, _ := io.ReadAll(pub.Body)
 	pub.Body.Close()

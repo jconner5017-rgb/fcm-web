@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { safeNext, send } from "@/lib/client";
+import { ADDON_PRICE, safeNext, send } from "@/lib/client";
 
 function Field(props: { id: string; label: string; type?: string; value: string; onChange: (v: string) => void; error?: string; autoComplete?: string; hint?: string }) {
   return (
@@ -46,7 +46,7 @@ export function SignUpForm({ next }: { next?: string }) {
       {error && <p role="alert" className="text-bad">{error}</p>}
       <button type="submit" disabled={busy} className="btn w-full">{busy ? "Creating…" : "Create account"}</button>
       <p className="text-[13px] text-muted">
-        Your first 30 days of sync are free. After that, cloud sync is a one-time $20 add-on. The desktop app keeps working either way.
+        Your first 30 days of sync are free. After that, cloud sync is the web add-on: {ADDON_PRICE}. The desktop app keeps working either way.
       </p>
       <p className="text-[14px]">Already have an account? <Link href={next ? `/signin?next=${encodeURIComponent(next)}` : "/signin"} className="font-semibold text-fire">Sign in</Link></p>
     </form>

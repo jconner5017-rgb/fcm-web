@@ -23,7 +23,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   return (
     <div className="mt-8">
       <h1 className="text-[26px] font-bold">Accounts</h1>
-      <p className="mt-1 text-muted">Turn on the one-time $20 web add-on after a customer pays, or give a trial a few more days.</p>
+      <p className="mt-1 text-muted">After a customer pays for the web add-on, add 6 months ($20) or 12 months ($40) to match their FCM license. A renewal adds on to the current end date. You can also give a trial a few more days.</p>
       <form className="mt-4 flex gap-2" action="/admin" method="get">
         <input name="q" defaultValue={q} placeholder="Search by email" className="field !mt-0 max-w-[320px]" />
         <button type="submit" className="btn-ghost">Search</button>

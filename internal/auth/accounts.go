@@ -39,14 +39,21 @@ type Account struct {
 	IsAdmin         bool       `json:"is_admin"`
 	Status          string     `json:"status"`
 	SyncTrialEndsAt time.Time  `json:"sync_trial_ends_at"`
-	WebAddonAt      *time.Time `json:"web_addon_at,omitempty"`
+	WebAddonAt      *time.Time `json:"web_addon_at,omitempty"`    // first time the add-on was bought
+	WebAddonUntil   *time.Time `json:"web_addon_until,omitempty"` // the add-on runs until this date
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
-// SyncAllowed: during the 30-day trial, or once the web add-on is on.
+// AddonActive: the web add-on is paid up ($20 with a 6-month FCM license,
+// $40 with a 12-month one).
+func (a Account) AddonActive(now time.Time) bool {
+	return a.WebAddonUntil != nil && now.Before(*a.WebAddonUntil)
+}
+
+// SyncAllowed: during the 30-day trial, or while the web add-on runs.
 // Admins always may (for testing).
 func (a Account) SyncAllowed(now time.Time) bool {
-	return a.IsAdmin || a.WebAddonAt != nil || now.Before(a.SyncTrialEndsAt)
+	return a.IsAdmin || a.AddonActive(now) || now.Before(a.SyncTrialEndsAt)
 }
 
 // Session is what a session token proves.
@@ -97,16 +104,20 @@ func validateSignup(email, password string) error {
 	return nil
 }
 
-const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.created_at`
+const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, a.created_at`
 
 func scanAccount(row interface{ Scan(...any) error }, extra ...any) (Account, error) {
 	var a Account
-	var addon sql.NullTime
-	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &a.CreatedAt}, extra...)
+	var addon, until sql.NullTime
+	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.CreatedAt}, extra...)
 	err := row.Scan(dst...)
 	if addon.Valid {
 		t := addon.Time
 		a.WebAddonAt = &t
+	}
+	if until.Valid {
+		t := until.Time
+		a.WebAddonUntil = &t
 	}
 	return a, err
 }
@@ -370,17 +381,36 @@ func (s *Service) ListAccounts(ctx context.Context, q string, limit int) ([]Admi
 	return out, rows.Err()
 }
 
-// SetWebAddon turns the one-time web add-on on (with a note, e.g. the order
-// number) or off.
-func (s *Service) SetWebAddon(ctx context.Context, accountID string, on bool, note string) error {
+// AddonMonths are the add-on terms sold: 6 months ($20) and 12 months ($40),
+// matching the FCM license lengths.
+var AddonMonths = map[int]bool{6: true, 12: true}
+
+// ExtendWebAddon adds months to an account's web add-on, counted from its
+// current end date if it's still running (a renewal loses no days),
+// otherwise from now. note records the order (number, amount).
+func (s *Service) ExtendWebAddon(ctx context.Context, accountID string, months int, note string) (time.Time, error) {
+	if !AddonMonths[months] {
+		return time.Time{}, &ValidationError{Fields: map[string]string{"months": "Use 6 or 12 months."}}
+	}
 	note = strings.TrimSpace(note)
 	if len(note) > 300 {
 		note = note[:300]
 	}
-	res, err := s.DB.ExecContext(ctx, `UPDATE accounts SET
-			web_addon_at = CASE WHEN $2 THEN coalesce(web_addon_at, now()) ELSE NULL END,
-			web_addon_note = NULLIF($3, ''), updated_at = now()
-		WHERE id = $1`, accountID, on, note)
+	var until time.Time
+	err := s.DB.QueryRowContext(ctx, `UPDATE accounts SET
+			web_addon_at = coalesce(web_addon_at, $4),
+			web_addon_until = (CASE WHEN web_addon_until > $4 THEN web_addon_until ELSE $4 END) + make_interval(months => $2),
+			web_addon_note = coalesce(NULLIF($3, ''), web_addon_note), updated_at = now()
+		WHERE id::text = $1 RETURNING web_addon_until`, accountID, months, note, s.now()).Scan(&until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	return until, err
+}
+
+// EndWebAddon stops the add-on now (a refund or a mistake).
+func (s *Service) EndWebAddon(ctx context.Context, accountID string) error {
+	res, err := s.DB.ExecContext(ctx, `UPDATE accounts SET web_addon_until = NULL, updated_at = now() WHERE id::text = $1`, accountID)
 	if err != nil {
 		return err
 	}

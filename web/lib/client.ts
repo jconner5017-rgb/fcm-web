@@ -53,3 +53,10 @@ export function when(iso?: string): string {
   if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
   return shortDate(iso);
 }
+
+/** The web add-on is paid up: it runs until web_addon_until. */
+export function addonActive(a: { web_addon_until?: string }): boolean {
+  return !!a.web_addon_until && new Date(a.web_addon_until).getTime() > Date.now();
+}
+
+export const ADDON_PRICE = "$20 with a 6-month FCM license or $40 with a 12-month one";

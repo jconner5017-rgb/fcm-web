@@ -653,7 +653,7 @@ func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request, needAllowed 
 	}
 	if needAllowed && !a.SyncAllowed(s.now()) {
 		writeError(w, http.StatusPaymentRequired, "sync_inactive",
-			"Your 30-day sync trial has ended. Add the FireCardManager Web add-on to keep syncing. The desktop app keeps working either way.", nil)
+			"Cloud sync is off: the free trial or the FireCardManager Web add-on has ended. The add-on is $20 with a 6-month FCM license or $40 with a 12-month one. The desktop app keeps working either way.", nil)
 		return cloudsync.Device{}, auth.Account{}, false
 	}
 	return cloudsync.Device{ID: d.ID, AccountID: d.AccountID, Edition: d.Edition}, a, true
@@ -671,9 +671,9 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": st, "account_email": a.Email, "sync_allowed": a.SyncAllowed(s.now()),
-		"trial_ends_at": a.SyncTrialEndsAt, "web_addon": a.WebAddonAt != nil, "edition": d.Edition, "device_id": d.ID,
+		"trial_ends_at": a.SyncTrialEndsAt, "web_addon": a.AddonActive(s.now()), "web_addon_until": a.WebAddonUntil, "edition": d.Edition, "device_id": d.ID,
 		// Hosted photo links for Shopify and Whatnot exports come with the add-on.
-		"photo_links": (a.WebAddonAt != nil || a.IsAdmin) && s.photos.Enabled(),
+		"photo_links": (a.AddonActive(s.now()) || a.IsAdmin) && s.photos.Enabled(),
 	})
 }
 
@@ -728,13 +728,31 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		On   bool   `json:"on"`
-		Note string `json:"note"`
+		Months int    `json:"months"` // 6 or 12; 0 ends the add-on now
+		Note   string `json:"note"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	err := s.auth.SetWebAddon(r.Context(), r.PathValue("id"), in.On, in.Note)
+	id := r.PathValue("id")
+	if in.Months == 0 {
+		err := s.auth.EndWebAddon(r.Context(), id)
+		if errors.Is(err, auth.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "Account not found.", nil)
+			return
+		}
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		s.log.Info("web add-on ended", "account", id)
+		writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": nil})
+		return
+	}
+	until, err := s.auth.ExtendWebAddon(r.Context(), id, in.Months, in.Note)
+	if validationError(w, err) {
+		return
+	}
 	if errors.Is(err, auth.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "Account not found.", nil)
 		return
@@ -743,8 +761,8 @@ func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.log.Info("web add-on changed", "account", r.PathValue("id"), "on", in.On)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	s.log.Info("web add-on extended", "account", id, "months", in.Months, "until", until)
+	writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": until})
 }
 
 func (s *Server) handleAdminTrial(w http.ResponseWriter, r *http.Request) {

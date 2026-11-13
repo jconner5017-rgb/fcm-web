@@ -272,7 +272,7 @@ func (s *Service) PublicPhoto(ctx context.Context, photoID string) (io.ReadClose
 	}
 	var key string
 	var hosted bool
-	err := s.DB.QueryRowContext(ctx, `SELECT p.object_key, (a.web_addon_at IS NOT NULL OR a.is_admin) AND a.status = 'active'
+	err := s.DB.QueryRowContext(ctx, `SELECT p.object_key, (coalesce(a.web_addon_until > now(), false) OR a.is_admin) AND a.status = 'active'
 		FROM sync_photos p JOIN accounts a ON a.id = p.account_id
 		WHERE p.id = $1 AND p.status = 'ready' AND p.side IN ('front', 'back')`, photoID).Scan(&key, &hosted)
 	if errors.Is(err, sql.ErrNoRows) {

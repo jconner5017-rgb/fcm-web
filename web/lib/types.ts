@@ -6,6 +6,7 @@ export type Account = {
   status: string;
   sync_trial_ends_at: string;
   web_addon_at?: string;
+  web_addon_until?: string;
   created_at: string;
 };
 
