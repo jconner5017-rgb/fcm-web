@@ -25,6 +25,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
+	"github.com/jconner5017-rgb/fcm-web/internal/templates"
 )
 
 const sessionCookie = "fcm_session"
@@ -59,6 +60,7 @@ type Server struct {
 	inv          *inventory.Service
 	lister       *lister.Service
 	ebay         *ebay.Service
+	templates    *templates.Service
 	log          *slog.Logger
 	cookieSecure bool
 	sessionTTL   time.Duration
@@ -77,7 +79,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, ebay: o.Ebay, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, ebay: o.Ebay, templates: &templates.Service{DB: o.DB}, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -165,6 +167,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/me/market-keys/{market}", requireAccount(s.handleMarketKeyPut))
 	mux.HandleFunc("DELETE /v1/me/market-keys/{market}", requireAccount(s.handleMarketKeyDelete))
 	mux.HandleFunc("POST /v1/devices/market-key", s.requireDevice(s.handleDeviceMarketKey))
+	mux.HandleFunc("POST /v1/devices/templates", s.requireDevice(s.handleDeviceTemplates))
+	mux.HandleFunc("GET /v1/templates", requireAccount(s.handleTemplatesList))
+	mux.HandleFunc("POST /v1/templates", requireAccount(s.handleTemplateSave))
+	mux.HandleFunc("PUT /v1/templates/{id}", requireAccount(s.handleTemplateSave))
+	mux.HandleFunc("DELETE /v1/templates/{id}", requireAccount(s.handleTemplateDelete))
 	mux.HandleFunc("POST /v1/lister/jobs", requireAccount(s.handleListerStart))
 	mux.HandleFunc("GET /v1/lister/jobs", requireAccount(s.handleListerRecent))
 	mux.HandleFunc("GET /v1/lister/jobs/{id}", requireAccount(s.handleListerGet))
@@ -1964,6 +1971,97 @@ func (s *Server) handleMarketKeyDelete(w http.ResponseWriter, r *http.Request) {
 // handleDeviceMarketKey: a linked PC sends its Slabs & Singles package
 // defaults. Any key it sends is ignored: the website uses its own key (made
 // "for FireCardManager Web"), so it never stands in for the desktop app.
+// handleDeviceTemplates takes a linked PC's Listing Templates (and its eBay
+// store name), so the website lists on eBay with the same ones.
+func (s *Server) handleDeviceTemplates(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	d, _, ok := s.syncDevice(w, r, false)
+	if !ok {
+		return
+	}
+	var in struct {
+		Templates []templates.Template `json:"templates"`
+		StoreName string               `json:"store_name"`
+	}
+	if !decodeJSONMax(w, r, &in, 8<<20) {
+		return
+	}
+	if err := s.templates.ReplaceFromPC(r.Context(), d.AccountID, d.Edition, in.Templates); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if name := strings.TrimSpace(in.StoreName); name != "" {
+		st, err := s.lister.EbaySettings(r.Context(), d.AccountID)
+		if err == nil && st.StoreName == "" {
+			st.StoreName = name
+			_ = s.lister.SaveEbaySettings(r.Context(), d.AccountID, st)
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTemplatesList(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	list, err := s.templates.List(r.Context(), sess.Account.ID, ed)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "templates": list,
+		"default_title": ebay.DefaultTitle, "default_description": ebay.DefaultDescription})
+}
+
+func (s *Server) handleTemplateSave(w http.ResponseWriter, r *http.Request) {
+	var in templates.Template
+	if !decodeJSONMax(w, r, &in, 1<<20) {
+		return
+	}
+	in.ID = r.PathValue("id")
+	if in.Edition != "tcg" {
+		in.Edition = "sports"
+	}
+	if p := templates.Problem(in); p != "" {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", p, nil)
+		return
+	}
+	sess, _ := currentSession(r)
+	t, err := s.templates.Save(r.Context(), sess.Account.ID, in)
+	switch {
+	case errors.Is(err, templates.ErrReadOnly):
+		writeError(w, http.StatusConflict, "read_only", err.Error()+". Make a copy to change it here.", nil)
+	case errors.Is(err, templates.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "Template not found.", nil)
+	case err != nil && strings.Contains(err.Error(), "too many"):
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "That's the most templates you can keep (50).", nil)
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		writeJSON(w, http.StatusOK, t)
+	}
+}
+
+func (s *Server) handleTemplateDelete(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	err := s.templates.Delete(r.Context(), sess.Account.ID, r.PathValue("id"))
+	switch {
+	case errors.Is(err, templates.ErrReadOnly):
+		writeError(w, http.StatusConflict, "read_only", err.Error()+".", nil)
+	case errors.Is(err, templates.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "Template not found.", nil)
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (s *Server) handleDeviceMarketKey(w http.ResponseWriter, r *http.Request) {
 	if !s.listerOn(w) {
 		return

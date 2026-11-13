@@ -49,6 +49,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
+	"github.com/jconner5017-rgb/fcm-web/internal/templates"
 )
 
 type env struct {
@@ -212,6 +213,7 @@ func setup(t *testing.T) *env {
 	e.ebaySvc = &ebay.Service{DB: d, Sealer: &auth.MFA{DB: d, Key: key}, AppID: "App-PRD-1", CertID: "cert-secret", RuName: "Test-RuName",
 		AuthURL: ebaySrv.URL, APIURL: ebaySrv.URL, IDURL: ebaySrv.URL}
 	e.lister.Ebay, e.lister.PhotoLink = e.ebaySvc, export.HostedLinks("https://app.test")
+	e.lister.Templates = &templates.Service{DB: d}
 	s := New(Options{
 		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key}, Ebay: e.ebaySvc,
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
@@ -1873,6 +1875,29 @@ func TestEbayListing(t *testing.T) {
 	got = owner.must(200, "GET", "/v1/lister/jobs/"+job["id"].(string), nil)
 	if s := got["items"].([]any)[0].(map[string]any)["status"]; s != "updated" || !strings.HasPrefix(e.ebay.calls[len(e.ebay.calls)-2], "update OFF-1") {
 		t.Fatalf("relist: %v %v", s, e.ebay.calls)
+	}
+
+	// The PC's Listing Templates: its default is used from now on.
+	pc.must(204, "POST", "/v1/devices/templates", map[string]any{"store_name": "PC Store", "templates": []map[string]any{
+		{"name": "Store Branded", "title_template": "{Year} {Brand}", "description_html": "<p>old</p>", "is_default": false},
+		{"name": "Mine", "title_template": "{PlayerName} {Year} TEST", "description_html": "<p>Custom {PlayerName} at {StoreName}</p>", "is_default": true}}})
+	tl := owner.must(200, "GET", "/v1/templates", nil)["templates"].([]any)
+	if len(tl) != 2 || tl[0].(map[string]any)["name"] != "Mine" || tl[0].(map[string]any)["source"] != "pc" {
+		t.Fatalf("templates: %v", tl)
+	}
+	owner.must(409, "PUT", "/v1/templates/"+tl[0].(map[string]any)["id"].(string), map[string]any{"name": "x", "title_template": "y", "description_html": "z"})
+	mine := owner.must(200, "POST", "/v1/templates", map[string]any{"edition": "sports", "name": "Web one", "title_template": "{PlayerName}", "description_html": "<b>{PlayerName}</b>"})
+	owner.must(204, "DELETE", "/v1/templates/"+mine["id"].(string), nil)
+	owner.must(201, "POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card}})
+	for {
+		did, _ := e.lister.RunOnce(context.Background())
+		if !did {
+			break
+		}
+	}
+	lastItem, lastCall := e.ebay.items[len(e.ebay.items)-1], e.ebay.calls[len(e.ebay.calls)-2]
+	if !strings.Contains(lastItem, `"title":"Victor Wembanyama 2023-24 TEST"`) || !strings.Contains(lastCall, `Custom Victor Wembanyama at Card Cave`) {
+		t.Fatalf("template used: %s\n%s", lastItem, lastCall)
 	}
 
 	// Live Listings: reprice, then end.

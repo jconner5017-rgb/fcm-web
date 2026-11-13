@@ -124,14 +124,24 @@ func (s *Service) listEbay(ctx context.Context, accountID, edition, cardID strin
 	if p := ebay.Problems(c, o, len(photos)); len(p) > 0 {
 		return "skipped", "Not listed: " + strings.Join(p, ", ") + "."
 	}
-	if err := s.Ebay.PutItem(ctx, token, c.Sku, ebay.Item(c, edition, photos, profile)); err != nil {
+	var titlePat, descTpl string
+	if s.Templates != nil {
+		t, err := s.Templates.Get(ctx, accountID, edition, o.Template)
+		if err != nil {
+			return "failed", "That listing template isn't there any more; pick another in the Bulk Lister."
+		}
+		if t != nil {
+			titlePat, descTpl = t.TitleTemplate, t.DescriptionHTML
+		}
+	}
+	if err := s.Ebay.PutItem(ctx, token, c.Sku, ebay.Item(c, edition, photos, profile, ebay.TitleFrom(titlePat, c, edition))); err != nil {
 		return "failed", ebayDescribe(err)
 	}
 	front, back := photos[0], ""
 	if len(photos) > 1 {
 		back = photos[1]
 	}
-	offerID, err := s.Ebay.Offer(ctx, token, ebay.Offer(c, edition, o, st, pol, ebay.Description(c, edition, st.StoreName, front, back)))
+	offerID, err := s.Ebay.Offer(ctx, token, ebay.Offer(c, edition, o, st, pol, ebay.DescriptionFrom(descTpl, c, edition, st.StoreName, front, back)))
 	if err != nil {
 		return "failed", ebayDescribe(err)
 	}

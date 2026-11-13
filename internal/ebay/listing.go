@@ -160,6 +160,22 @@ func render(tpl string, c Card, edition, store, front, back string, title bool) 
 // Title is the listing title from the Store Branded template.
 func Title(c Card, edition string) string { return render(DefaultTitle, c, edition, "", "", "", true) }
 
+// TitleFrom fills in a template's title pattern ("" uses the default).
+func TitleFrom(pattern string, c Card, edition string) string {
+	if strings.TrimSpace(pattern) == "" {
+		pattern = DefaultTitle
+	}
+	return render(pattern, c, edition, "", "", "", true)
+}
+
+// DescriptionFrom fills in a template's description ("" uses Store Branded).
+func DescriptionFrom(tpl string, c Card, edition, store, front, back string) string {
+	if strings.TrimSpace(tpl) == "" {
+		tpl = DefaultDescription
+	}
+	return render(tpl, c, edition, store, front, back, false) + footer
+}
+
 const footer = `<p style="margin-top:16px;color:#666;font-size:12px;">Provided by FireCardManager.com</p>`
 
 // Description is the Store Branded template's HTML with the card filled in.
@@ -183,7 +199,7 @@ func conditionID(cond string) string {
 func graded(c Card) bool { g := str(c.GradingCompany); return g != "" && !strings.EqualFold(g, "raw") }
 
 // Item is the inventory item for the card (EbayListingService.PublishAsync).
-func Item(c Card, edition string, photos []string, pkg Profile) map[string]any {
+func Item(c Card, edition string, photos []string, pkg Profile, title string) map[string]any {
 	a := map[string][]string{}
 	set := func(k, v string) {
 		if strings.TrimSpace(v) != "" {
@@ -240,7 +256,7 @@ func Item(c Card, edition string, photos []string, pkg Profile) map[string]any {
 
 	item := map[string]any{
 		"availability": map[string]any{"shipToLocationAvailability": map[string]int{"quantity": 1}},
-		"product":      map[string]any{"title": Title(c, edition), "imageUrls": photos, "aspects": a},
+		"product":      map[string]any{"title": title, "imageUrls": photos, "aspects": a},
 	}
 	if pkg.WeightOz > 0 {
 		item["packageWeightAndSize"] = pkg.PackageDetails()

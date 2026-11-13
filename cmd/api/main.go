@@ -21,6 +21,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/export"
+	"github.com/jconner5017-rgb/fcm-web/internal/templates"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
@@ -120,6 +121,7 @@ func run(log *slog.Logger) error {
 	}
 
 	listerSvc.Ebay, listerSvc.PhotoLink = ebaySvc, export.HostedLinks(webURL)
+	listerSvc.Templates = &templates.Service{DB: database}
 
 	srv := httpapi.New(httpapi.Options{
 		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,

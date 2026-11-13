@@ -220,6 +220,7 @@ type Options struct {
 	AcceptPercent       *int     `json:"accept_percent"`
 	DeclinePercent      *int     `json:"decline_percent"`
 	ShippingProfile     string   `json:"shipping_profile,omitempty"` // eBay: which shipping profile (id)
+	Template            string   `json:"template,omitempty"`         // eBay: which listing template (id; "" the default)
 }
 
 // Ship are the seller's package defaults from FireCardManager's settings.
