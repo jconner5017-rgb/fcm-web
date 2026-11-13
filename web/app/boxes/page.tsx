@@ -83,7 +83,7 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
           {page.cards.length === 0 ? (
             <p className="card text-muted">No cards here.</p>
           ) : (
-            <ul className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            <ul className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {page.cards.map((c) => <li key={c.id}><BoxTile c={c} from={self} /></li>)}
             </ul>
           )}

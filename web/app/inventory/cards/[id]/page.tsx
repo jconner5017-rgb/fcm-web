@@ -137,7 +137,7 @@ export default async function CardPage({
             <h2 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">Selling</h2>
             <Rows
               items={[
-                ["Status", STATUS_LABELS[d.status ?? ""] || d.status],
+                ["Status", live ? live.replace("Live · ", "Live on ").replace("S&S", "Slabs & Singles").replace("eBay + Slabs & Singles", "eBay and Slabs & Singles") : STATUS_LABELS[d.status ?? ""] || d.status],
                 ["Price", money(d.sale_price)],
                 ["Start bid", d.status === "EBA" ? money(d.start_bid) : ""],
                 ["Reserve", money(d.reserve_price)],
