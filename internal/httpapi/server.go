@@ -1,0 +1,761 @@
+// Package httpapi is FCM Web's JSON API: accounts for the website, linking
+// for the desktop apps, and the sync endpoints those apps call.
+package httpapi
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jconner5017-rgb/fcm-web/internal/auth"
+	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
+	"github.com/jconner5017-rgb/fcm-web/internal/devices"
+	"github.com/jconner5017-rgb/fcm-web/internal/email"
+)
+
+const sessionCookie = "fcm_session"
+
+type Options struct {
+	DB           *sql.DB
+	Auth         *auth.Service
+	MFA          *auth.MFA
+	Mail         *email.Service
+	Devices      *devices.Service
+	Sync         *cloudsync.Service
+	Log          *slog.Logger
+	CookieSecure bool
+	SessionTTL   time.Duration
+	TrustProxy   bool
+	WebURL       string // https://app.firecardmanager.com, for links in email
+	Now          func() time.Time
+}
+
+type Server struct {
+	db           *sql.DB
+	auth         *auth.Service
+	mfa          *auth.MFA
+	mail         *email.Service
+	devices      *devices.Service
+	sync         *cloudsync.Service
+	log          *slog.Logger
+	cookieSecure bool
+	sessionTTL   time.Duration
+	trustProxy   bool
+	webURL       string
+	now          func() time.Time
+
+	authLimiter *rateLimiter // sign-in, sign-up, codes: per IP
+	linkLimiter *rateLimiter // desktop link starts: per IP
+	mailLimiter *rateLimiter // reset and verify emails: per IP
+}
+
+func New(o Options) *Server {
+	now := o.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Server{
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, log: o.Log,
+		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
+		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
+		authLimiter: newRateLimiter(20, time.Minute),
+		linkLimiter: newRateLimiter(10, time.Minute),
+		mailLimiter: newRateLimiter(5, 10*time.Minute),
+	}
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+
+	// Accounts (website)
+	mux.HandleFunc("POST /v1/auth/signup", s.limited(s.authLimiter, s.handleSignup))
+	mux.HandleFunc("POST /v1/auth/login", s.limited(s.authLimiter, s.handleLogin))
+	mux.HandleFunc("POST /v1/auth/mfa", s.limited(s.authLimiter, s.handleLoginMFA))
+	mux.HandleFunc("POST /v1/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /v1/auth/verify-email", s.handleVerifyEmail)
+	mux.HandleFunc("POST /v1/auth/forgot-password", s.limited(s.mailLimiter, s.handleForgotPassword))
+	mux.HandleFunc("POST /v1/auth/reset-password", s.limited(s.authLimiter, s.handleResetPassword))
+	mux.HandleFunc("GET /v1/me", requireAccount(s.handleMe))
+	mux.HandleFunc("POST /v1/me/resend-verification", requireAccount(s.limited(s.mailLimiter, s.handleResendVerification)))
+	mux.HandleFunc("POST /v1/me/password", requireAccount(s.limited(s.authLimiter, s.handleChangePassword)))
+	mux.HandleFunc("POST /v1/me/mfa/setup", requireAccount(s.handleMFASetup))
+	mux.HandleFunc("POST /v1/me/mfa/confirm", requireAccount(s.limited(s.authLimiter, s.handleMFAConfirm)))
+	mux.HandleFunc("POST /v1/me/mfa/disable", requireAccount(s.limited(s.authLimiter, s.handleMFADisable)))
+
+	// Linking a desktop app
+	mux.HandleFunc("POST /v1/devices/link/start", s.limited(s.linkLimiter, s.handleLinkStart))
+	mux.HandleFunc("POST /v1/devices/link/finish", s.handleLinkFinish)
+	mux.HandleFunc("GET /v1/devices/link/{code}", requireAccount(s.handleLinkLookup))
+	mux.HandleFunc("POST /v1/devices/link/approve", requireAccount(s.handleLinkApprove))
+	mux.HandleFunc("GET /v1/devices", requireAccount(s.handleDevices))
+	mux.HandleFunc("DELETE /v1/devices/{id}", requireAccount(s.handleDeviceRevoke))
+
+	// Sync (desktop apps, device token)
+	mux.HandleFunc("GET /v1/sync/status", s.requireDevice(s.handleSyncStatus))
+	mux.HandleFunc("POST /v1/sync/push", s.requireDevice(s.handleSyncPush))
+	mux.HandleFunc("GET /v1/sync/pull", s.requireDevice(s.handleSyncPull))
+
+	// Admin (owner, with 2FA on)
+	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/addon", s.requireAdmin(s.handleAdminAddon))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/trial", s.requireAdmin(s.handleAdminTrial))
+
+	var h http.Handler = mux
+	h = s.loadSession(h)
+	h = requireJSONForWrites(h)
+	h = requestLogger(s.log, h)
+	h = recoverer(s.log, h)
+	return h
+}
+
+func (s *Server) limited(l *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !l.allow(clientIP(r, s.trustProxy) + " " + r.URL.Path) {
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many tries. Wait a few minutes and try again.", nil)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.db.PingContext(ctx); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "db_down", "database unreachable", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, ttl time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: token, Path: "/", MaxAge: int(ttl.Seconds()),
+		HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error) {
+	s.log.Error("internal error", "path", r.URL.Path, "err", err)
+	writeError(w, http.StatusInternalServerError, "internal", "Something went wrong. Try again in a minute.", nil)
+}
+
+func validationError(w http.ResponseWriter, err error) bool {
+	var ve *auth.ValidationError
+	if errors.As(err, &ve) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Check the highlighted fields.", ve.Fields)
+		return true
+	}
+	return false
+}
+
+// ---------------- accounts ----------------
+
+type meResponse struct {
+	Account     auth.Account `json:"account"`
+	MFAEnabled  bool         `json:"mfa_enabled"`
+	SyncAllowed bool         `json:"sync_allowed"`
+	Editions    []string     `json:"editions"`
+	CardLimit   int          `json:"card_limit"`
+}
+
+func (s *Server) me(ctx context.Context, a auth.Account) (meResponse, error) {
+	st, err := s.mfa.Status(ctx, a.ID)
+	if err != nil {
+		return meResponse{}, err
+	}
+	eds, err := s.devices.Editions(ctx, a.ID)
+	if err != nil {
+		return meResponse{}, err
+	}
+	return meResponse{Account: a, MFAEnabled: st != "setup_required", SyncAllowed: a.SyncAllowed(s.now()),
+		Editions: eds, CardLimit: cloudsync.CardLimit}, nil
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	out, err := s.me(r.Context(), sess.Account)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	a, err := s.auth.Signup(r.Context(), in.Email, in.Password)
+	if validationError(w, err) {
+		return
+	}
+	if errors.Is(err, auth.ErrEmailTaken) {
+		writeError(w, http.StatusConflict, "email_taken", "An account with that email already exists. Sign in instead.",
+			map[string]string{"email": "Already registered."})
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	token, err := s.auth.StartSession(r.Context(), a.ID, clientIP(r, s.trustProxy), r.UserAgent())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.sendVerification(r.Context(), a)
+	s.setSessionCookie(w, token, s.sessionTTL)
+	out, err := s.me(r.Context(), a)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) sendVerification(ctx context.Context, a auth.Account) {
+	if !s.mail.Enabled() {
+		return
+	}
+	tok, err := s.mail.NewToken(ctx, s.db, a.ID, a.Email, "verify", 48*time.Hour)
+	if err != nil {
+		s.log.Warn("verify token", "err", err)
+		return
+	}
+	body := "Welcome to FireCardManager Web.\n\nConfirm your email address:\n" + s.webURL + "/verify-email?token=" + tok +
+		"\n\nThe link works for 48 hours. If you didn't sign up, ignore this email."
+	if err := s.mail.Queue(ctx, s.db, a.ID, a.Email, "Confirm your FireCardManager email", body); err != nil {
+		s.log.Warn("queue verify email", "err", err)
+	}
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	a, token, mfaNeeded, err := s.auth.Login(r.Context(), in.Email, in.Password, clientIP(r, s.trustProxy), r.UserAgent())
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, "bad_credentials", "Wrong email or password.", nil)
+		return
+	case errors.Is(err, auth.ErrAccountDisabled):
+		writeError(w, http.StatusForbidden, "disabled", "This account is disabled. Contact FireCardManager support.", nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	if mfaNeeded {
+		s.setSessionCookie(w, token, 10*time.Minute)
+		writeJSON(w, http.StatusOK, map[string]any{"mfa_required": true})
+		return
+	}
+	s.setSessionCookie(w, token, s.sessionTTL)
+	out, err := s.me(r.Context(), a)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleLoginMFA finishes a sign-in with an authenticator or backup code.
+func (s *Server) handleLoginMFA(w http.ResponseWriter, r *http.Request) {
+	sess, ok := currentSession(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Your sign-in timed out. Enter your password again.", nil)
+		return
+	}
+	var in struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	res, err := s.mfa.Verify(r.Context(), sess.Account.ID, in.Code)
+	if errors.Is(err, auth.ErrBadCode) || errors.Is(err, auth.ErrMFALocked) {
+		writeError(w, http.StatusUnauthorized, "bad_code", err.Error(), nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.auth.MarkSessionMFA(r.Context(), sessionToken(r)); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.setSessionCookie(w, sessionToken(r), s.sessionTTL)
+	out, err := s.me(r.Context(), sess.Account)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"me": out, "used_backup": res.UsedBackup, "backups_left": res.BackupsLeft})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if t := sessionToken(r); t != "" {
+		s.auth.Logout(r.Context(), t)
+	}
+	s.clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	id, addr, err := s.mail.UseToken(r.Context(), tx, in.Token, "verify")
+	if errors.Is(err, email.ErrToken) {
+		writeError(w, http.StatusBadRequest, "bad_token", "That link has expired or was already used.", nil)
+		return
+	}
+	if err == nil {
+		err = s.auth.MarkVerified(r.Context(), tx, id, addr)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"verified": true})
+}
+
+func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	if sess.Account.EmailVerified {
+		writeJSON(w, http.StatusOK, map[string]bool{"sent": false})
+		return
+	}
+	s.sendVerification(r.Context(), sess.Account)
+	writeJSON(w, http.StatusOK, map[string]bool{"sent": s.mail.Enabled()})
+}
+
+// handleForgotPassword always answers the same way, so it can't be used to
+// find out which emails have accounts.
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if a, err := s.auth.ByEmail(r.Context(), in.Email); err == nil && a.Status == "active" && s.mail.Enabled() {
+		if n, _ := s.mail.RecentTokens(r.Context(), a.ID, "reset", time.Hour); n < 3 {
+			if tok, err := s.mail.NewToken(r.Context(), s.db, a.ID, a.Email, "reset", time.Hour); err == nil {
+				body := "Someone asked to reset the password for your FireCardManager Web account.\n\nChoose a new password:\n" +
+					s.webURL + "/reset-password?token=" + tok + "\n\nThe link works for one hour. If this wasn't you, ignore this email; your password hasn't changed."
+				s.mail.Queue(r.Context(), s.db, a.ID, a.Email, "Reset your FireCardManager password", body)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	id, addr, err := s.mail.UseToken(r.Context(), tx, in.Token, "reset")
+	if errors.Is(err, email.ErrToken) {
+		writeError(w, http.StatusBadRequest, "bad_token", "That link has expired or was already used. Ask for a new one.", nil)
+		return
+	}
+	if err == nil {
+		err = s.auth.SetPassword(r.Context(), tx, id, in.Password)
+	}
+	if validationError(w, err) {
+		return
+	}
+	if err == nil {
+		// Getting the reset email proves the address too.
+		err = s.auth.MarkVerified(r.Context(), tx, id, addr)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `DELETE FROM sessions WHERE account_id = $1`, id)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	var in struct {
+		Current  string `json:"current_password"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	err := s.auth.ChangePassword(r.Context(), sess.Account.ID, in.Current, in.Password)
+	if validationError(w, err) {
+		return
+	}
+	if err == nil {
+		err = s.auth.LogoutOthers(r.Context(), sess.Account.ID, sessionToken(r))
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleMFASetup(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	secret, link, err := s.mfa.Setup(r.Context(), sess.Account.ID, sess.Account.Email)
+	switch {
+	case errors.Is(err, auth.ErrMFAEnrolled):
+		writeError(w, http.StatusConflict, "mfa_enabled", "Two-factor sign-in is already on.", nil)
+		return
+	case errors.Is(err, auth.ErrMFANotConfigured):
+		writeError(w, http.StatusServiceUnavailable, "mfa_unavailable", "Two-factor sign-in isn't available yet.", nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"secret": secret, "otpauth_url": link})
+}
+
+func (s *Server) handleMFAConfirm(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	var in struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	codes, err := s.mfa.Confirm(r.Context(), sess.Account.ID, in.Code)
+	switch {
+	case errors.Is(err, auth.ErrBadCode), errors.Is(err, auth.ErrMFANotEnrolled), errors.Is(err, auth.ErrMFAEnrolled):
+		writeError(w, http.StatusBadRequest, "bad_code", err.Error(), nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"backup_codes": codes})
+}
+
+func (s *Server) handleMFADisable(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	var in struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if _, err := s.mfa.Verify(r.Context(), sess.Account.ID, in.Code); err != nil {
+		if errors.Is(err, auth.ErrBadCode) || errors.Is(err, auth.ErrMFALocked) || errors.Is(err, auth.ErrMFANotEnrolled) {
+			writeError(w, http.StatusBadRequest, "bad_code", err.Error(), nil)
+			return
+		}
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.mfa.Reset(r.Context(), sess.Account.ID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---------------- linking a desktop app ----------------
+
+func (s *Server) handleLinkStart(w http.ResponseWriter, r *http.Request) {
+	var in devices.StartInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	res, err := s.devices.Start(r.Context(), in)
+	switch {
+	case errors.Is(err, devices.ErrBadInput):
+		writeError(w, http.StatusBadRequest, "bad_input", "The app sent an incomplete link request. Update FireCardManager and try again.", nil)
+		return
+	case errors.Is(err, devices.ErrBadLicense):
+		writeError(w, http.StatusForbidden, "bad_license", "This PC's license key didn't check out. Re-enter it under Help > License, then try again.", nil)
+		return
+	case errors.Is(err, devices.ErrExpired):
+		writeError(w, http.StatusForbidden, "license_expired", "This license has expired. Renew it to link this PC.", nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"link_id": res.LinkID, "user_code": res.UserCode, "poll_secret": res.PollSecret,
+		"expires_at": res.ExpiresAt, "interval": res.Interval,
+		"verify_url": s.webURL + "/link?code=" + res.UserCode,
+	})
+}
+
+func (s *Server) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		LinkID     string `json:"link_id"`
+		PollSecret string `json:"poll_secret"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	res, err := s.devices.Finish(r.Context(), in.LinkID, in.PollSecret)
+	switch {
+	case errors.Is(err, devices.ErrPending):
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending"})
+		return
+	case errors.Is(err, devices.ErrCodeNotFound):
+		writeError(w, http.StatusGone, "link_expired", "The link code expired. Start again.", nil)
+		return
+	case errors.Is(err, devices.ErrCodeUsed):
+		writeError(w, http.StatusGone, "link_used", "This link was already finished. Start again if this PC isn't linked.", nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleLinkLookup(w http.ResponseWriter, r *http.Request) {
+	p, err := s.devices.Lookup(r.Context(), r.PathValue("code"))
+	switch {
+	case errors.Is(err, devices.ErrCodeNotFound):
+		writeError(w, http.StatusNotFound, "code_not_found", "That code wasn't found or has expired. Start again from the desktop app.", nil)
+		return
+	case errors.Is(err, devices.ErrCodeUsed):
+		writeError(w, http.StatusGone, "code_used", "That code was already approved.", nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) handleLinkApprove(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	var in struct {
+		UserCode string `json:"user_code"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	err := s.devices.Approve(r.Context(), sess.Account.ID, in.UserCode)
+	switch {
+	case errors.Is(err, devices.ErrCodeNotFound):
+		writeError(w, http.StatusNotFound, "code_not_found", "That code wasn't found or has expired. Start again from the desktop app.", nil)
+		return
+	case errors.Is(err, devices.ErrCodeUsed):
+		writeError(w, http.StatusGone, "code_used", "That code was already approved.", nil)
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"approved": true})
+}
+
+func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	list, err := s.devices.List(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": list})
+}
+
+func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	err := s.devices.Revoke(r.Context(), sess.Account.ID, r.PathValue("id"))
+	if errors.Is(err, devices.ErrNoDevice) {
+		writeError(w, http.StatusNotFound, "not_found", "That PC isn't linked.", nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------- sync ----------------
+
+// syncDevice loads the device's account and checks it may sync.
+func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request, needAllowed bool) (cloudsync.Device, auth.Account, bool) {
+	d := currentDevice(r)
+	a, err := s.auth.ByID(r.Context(), d.AccountID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return cloudsync.Device{}, auth.Account{}, false
+	}
+	if a.Status != "active" {
+		writeError(w, http.StatusForbidden, "disabled", "This FireCardManager Web account is disabled.", nil)
+		return cloudsync.Device{}, auth.Account{}, false
+	}
+	if needAllowed && !a.SyncAllowed(s.now()) {
+		writeError(w, http.StatusPaymentRequired, "sync_inactive",
+			"Your 30-day sync trial has ended. Add the FireCardManager Web add-on to keep syncing. The desktop app keeps working either way.", nil)
+		return cloudsync.Device{}, auth.Account{}, false
+	}
+	return cloudsync.Device{ID: d.ID, AccountID: d.AccountID, Edition: d.Edition}, a, true
+}
+
+func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
+	d, a, ok := s.syncDevice(w, r, false)
+	if !ok {
+		return
+	}
+	st, err := s.sync.Status(r.Context(), d)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": st, "account_email": a.Email, "sync_allowed": a.SyncAllowed(s.now()),
+		"trial_ends_at": a.SyncTrialEndsAt, "web_addon": a.WebAddonAt != nil, "edition": d.Edition, "device_id": d.ID,
+	})
+}
+
+func (s *Server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
+	d, _, ok := s.syncDevice(w, r, true)
+	if !ok {
+		return
+	}
+	var in struct {
+		Changes []cloudsync.Change `json:"changes"`
+	}
+	if !decodeJSONMax(w, r, &in, 8<<20) {
+		return
+	}
+	res, err := s.sync.Push(r.Context(), d, in.Changes)
+	if errors.Is(err, cloudsync.ErrBatchTooBig) {
+		writeError(w, http.StatusRequestEntityTooLarge, "batch_too_big", err.Error(), nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": res})
+}
+
+func (s *Server) handleSyncPull(w http.ResponseWriter, r *http.Request) {
+	d, _, ok := s.syncDevice(w, r, true)
+	if !ok {
+		return
+	}
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	res, err := s.sync.Pull(r.Context(), d, after, limit)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// ---------------- admin ----------------
+
+func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
+	list, err := s.auth.ListAccounts(r.Context(), r.URL.Query().Get("q"), 200)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": list})
+}
+
+func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		On   bool   `json:"on"`
+		Note string `json:"note"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	err := s.auth.SetWebAddon(r.Context(), r.PathValue("id"), in.On, in.Note)
+	if errors.Is(err, auth.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "Account not found.", nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.log.Info("web add-on changed", "account", r.PathValue("id"), "on", in.On)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAdminTrial(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Until string `json:"until"` // YYYY-MM-DD
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	until, err := time.Parse("2006-01-02", in.Until)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Use a date like 2026-12-31.", map[string]string{"until": "Use YYYY-MM-DD."})
+		return
+	}
+	if _, err := s.auth.ByID(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "Account not found.", nil)
+		return
+	}
+	if err := s.auth.ExtendTrial(r.Context(), r.PathValue("id"), until.Add(24*time.Hour-time.Second)); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
