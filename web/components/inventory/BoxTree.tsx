@@ -1,3 +1,4 @@
+import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { href, type Params, type TreeSport } from "@/lib/inventory";
 
@@ -25,7 +26,7 @@ export default function BoxTree({ sports, total, cur }: { sports: TreeSport[]; t
         return (
           <div key={s.sport}>
             <Link href={href("/boxes", base, { sport: s.sport })} className={row(sportOn && !cur.box, sportOn, 0)}>
-              {dot(sportOn)} <span className="text-muted" aria-hidden>{sportOn ? "▾" : "▸"}</span> <span className="truncate">{s.sport}</span> {count(s.cards)}
+              {dot(sportOn)} <span className="text-muted" aria-hidden>{sportOn ? "▾" : "▸"}</span> <span className="truncate">{catName(s.sport)}</span> {count(s.cards)}
             </Link>
             {sportOn &&
               s.boxes.map((b) => {

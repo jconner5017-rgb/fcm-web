@@ -1,5 +1,6 @@
 "use client";
 
+import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { send } from "@/lib/client";
@@ -205,7 +206,7 @@ export default function AddCard({ editions, hasKey }: { editions: string[]; hasK
               {tcg ? "Category" : "Sport"} <span className="font-normal text-muted">(picks the box)</span>
               <select className="field" value={form.sport} onChange={set("sport")} required>
                 <option value="">Choose...</option>
-                {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+                {cats.map((c) => <option key={c} value={c}>{catName(c)}</option>)}
               </select>
             </label>
             <label className="block text-[13px] font-semibold">{tcg ? "Franchise / series" : "Team"}<input className="field" value={form.team} onChange={set("team")} /></label>

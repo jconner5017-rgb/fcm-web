@@ -209,10 +209,10 @@ export default function CardActions({ card }: { card: CardDetail }) {
 
           <fieldset className="grid gap-3 sm:grid-cols-2">
             <legend className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">Card</legend>
-            <Field label="Player / name" error={fieldErrors.player_name} wide>
+            <Field label={tcg ? "Character / subject name" : "Player"} error={fieldErrors.player_name} wide>
               <input className="field" value={f.player_name} onChange={set("player_name")} required />
             </Field>
-            <Field label="Team" error={fieldErrors.team}><input className="field" value={f.team} onChange={set("team")} /></Field>
+            <Field label={tcg ? "Franchise" : "Team"} error={fieldErrors.team}><input className="field" value={f.team} onChange={set("team")} /></Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Year" error={fieldErrors.year}><input className="field num" inputMode="numeric" value={f.year} onChange={set("year")} /></Field>
               <Field label="Season end" error={fieldErrors.season_end}>

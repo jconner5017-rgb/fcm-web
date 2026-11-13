@@ -136,9 +136,9 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             <label>
               <span className="sr-only">Sort</span>
               <AutoSubmit name="sort" defaultValue={cur.sort ?? ""} className="field !mt-0 !w-auto">
-                <option value="">{cur.q ? "Player" : "Box, row, slot"}</option>
+                <option value="">{cur.q ? (cur.edition === "tcg" ? "Name" : "Player") : "Box, row, slot"}</option>
                 <option value="slot">Box, row, slot</option>
-                <option value="player">Player</option>
+                <option value="player">{cur.edition === "tcg" ? "Name" : "Player"}</option>
                 <option value="set">Set</option>
                 <option value="year">Year</option>
                 <option value="value">Value</option>

@@ -1,3 +1,4 @@
+import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
@@ -60,6 +61,7 @@ export default async function CardPage({
   const c = res.data;
   if (!c) return <p className="card mt-8">This card couldn&apos;t be loaded just now. Refresh the page in a minute.</p>;
   const d = c.data;
+  const tcg = c.edition === "tcg";
   const live = liveText(d);
   const tags = [gradeText(d), ...flags(d)].filter(Boolean);
 
@@ -117,9 +119,9 @@ export default async function CardPage({
             <h2 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-muted">Card</h2>
             <Rows
               items={[
-                ["Player", d.player_name],
-                ["Team", d.team],
-                ["Sport", d.sport],
+                [tcg ? "Character" : "Player", d.player_name],
+                [tcg ? "Franchise" : "Team", d.team],
+                [tcg ? "Category" : "Sport", catName(d.sport)],
                 ["Year", seasonText(d)],
                 ["Brand", d.brand],
                 ["Set", d.set_name],

@@ -1,5 +1,6 @@
 "use client";
 
+import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { send } from "@/lib/client";
@@ -359,12 +360,12 @@ function BatchRow({ n, it, tcg, cats, locked, onChange, onRetry }: {
 
           {f && !busy && !done && (
             <fieldset disabled={locked} className="grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">
-              <label className="col-span-2 block font-semibold">Player / name<input className="field !mt-0.5 !py-1.5" value={f.player_name} onChange={set("player_name")} /></label>
+              <label className="col-span-2 block font-semibold">{tcg ? "Character / name" : "Player / name"}<input className="field !mt-0.5 !py-1.5" value={f.player_name} onChange={set("player_name")} /></label>
               <label className="block font-semibold">
                 {tcg ? "Category" : "Sport"}
                 <select className="field !mt-0.5 !py-1.5" value={f.sport} onChange={set("sport")}>
                   <option value="">Choose...</option>
-                  {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {cats.map((c) => <option key={c} value={c}>{catName(c)}</option>)}
                 </select>
               </label>
               <label className="block font-semibold">Year<input className="field num !mt-0.5 !py-1.5" inputMode="numeric" value={f.year} onChange={set("year")} /></label>

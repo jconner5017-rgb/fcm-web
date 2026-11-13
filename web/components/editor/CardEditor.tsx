@@ -1,5 +1,6 @@
 "use client";
 
+import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { send } from "@/lib/client";
@@ -257,7 +258,7 @@ export default function CardEditor({ edition, sports, start }: { edition: string
       <div className="flex flex-wrap items-center gap-2">
         <select className="field !mt-0 !w-auto !py-1.5" value={filter.sport} onChange={(e) => change({ sport: e.target.value, box: "", row: "" })} aria-label="Category">
           <option value="">All categories</option>
-          {sports.map((x) => <option key={x.sport} value={x.sport}>{x.sport} ({x.cards})</option>)}
+          {sports.map((x) => <option key={x.sport} value={x.sport}>{catName(x.sport)} ({x.cards})</option>)}
         </select>
         {s && (
           <select className="field !mt-0 !w-auto !py-1.5" value={filter.box} onChange={(e) => change({ box: e.target.value, row: "" })} aria-label="Box">
@@ -280,7 +281,7 @@ export default function CardEditor({ edition, sports, start }: { edition: string
               <span className="text-[13px] font-semibold text-go">{checked.size} checked</span>
               <select className="field !mt-0 !w-auto !py-1.5" value={bulkCat} onChange={(e) => setBulkCat(e.target.value)} aria-label="Category for checked cards">
                 <option value="">Category...</option>
-                {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+                {cats.map((c) => <option key={c} value={c}>{catName(c)}</option>)}
               </select>
               <button type="button" className="btn-ghost !py-1.5" disabled={!bulkCat || !!busy} onClick={applyCategory}>Apply</button>
             </>
@@ -346,7 +347,7 @@ export default function CardEditor({ edition, sports, start }: { edition: string
                       </td>
                       <td className="whitespace-nowrap px-2 font-semibold">{locationCode(c)}</td>
                       <td className="whitespace-nowrap px-2">{c.data.sku}</td>
-                      <td className="px-2">{c.data.sport}</td>
+                      <td className="px-2">{catName(c.data.sport)}</td>
                       <td className="px-2">{seasonText(c.data)}</td>
                       <td className="max-w-[140px] truncate px-2">{c.data.brand}</td>
                       <td className="max-w-[220px] truncate px-2">{c.data.set_name}</td>
@@ -397,12 +398,12 @@ export default function CardEditor({ edition, sports, start }: { edition: string
                   <p className="text-[11px] font-bold uppercase text-muted">Identity</p>
                   <label className="block font-semibold">Category
                     <select className="field" value={form.sport} onChange={(e) => setField("sport", e.target.value)}>
-                      {!cats.includes(form.sport) && <option value={form.sport}>{form.sport || "—"}</option>}
-                      {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+                      {!cats.includes(form.sport) && <option value={form.sport}>{catName(form.sport) || "—"}</option>}
+                      {cats.map((c) => <option key={c} value={c}>{catName(c)}</option>)}
                     </select></label>
-                  <label className="block font-semibold">{tcg ? "Card name" : "Player name"}
+                  <label className="block font-semibold">{tcg ? "Character / subject name" : "Player name"}
                     <input className="field" value={form.player_name} placeholder={d.player_name === PENDING ? "Not identified yet" : ""} onChange={(e) => setField("player_name", e.target.value)} />{err("player_name")}</label>
-                  <label className="block font-semibold">{tcg ? "Franchise / series" : "Team"}<input className="field" value={form.team} onChange={(e) => setField("team", e.target.value)} /></label>
+                  <label className="block font-semibold">{tcg ? "Franchise / show / movie / series" : "Team"}<input className="field" value={form.team} onChange={(e) => setField("team", e.target.value)} /></label>
                   <label className="block font-semibold">Year<input className="field num" value={form.year} onChange={(e) => setField("year", e.target.value)} placeholder="2024 or 2024-25" />{err("year")}</label>
                   <label className="block font-semibold">Product name <span className="font-normal text-muted">(e.g. Panini Prizm, Topps)</span>
                     <input className="field" value={form.brand} onChange={(e) => setField("brand", e.target.value)} />{err("brand")}</label>

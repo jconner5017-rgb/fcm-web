@@ -4,7 +4,7 @@ import { send } from "./client";
 export const SPORTS = ["Baseball", "Basketball", "Football", "Hockey", "Soccer", "Boxing", "Golf", "Mma", "Racing", "Tennis", "Wrestling", "Multisport"];
 export const TCG = ["Pokemon", "Magic", "YuGiOh", "OnePiece", "Lorcana", "DragonBall", "Digimon", "FleshAndBlood", "FinalFantasy", "StarWarsTcg", "WeissSchwarz",
   "Vanguard", "Naruto", "MetaZoo", "Riftbound", "WorldOfWarcraft", "MyLittlePony", "Sorcery", "Netrunner", "UniVersus", "OtherTcg", "Superheroes", "SciFi",
-  "Fantasy", "Anime", "Horror", "Entertainment", "Music", "Historical", "Novelty"];
+  "Fantasy", "Anime", "Horror", "Entertainment", "Music", "Historical", "Novelty", "Unsorted"];
 
 /** A photo made ready in the browser: full size for storage, a thumbnail, and a mid size for the AI. */
 export type Shot = { preview: string; full: Blob; thumb: Blob; ai: Blob };

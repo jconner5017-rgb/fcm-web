@@ -1,5 +1,6 @@
 "use client";
 
+import { catName } from "@/lib/cats";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { send } from "@/lib/client";
@@ -135,7 +136,7 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
           </select>
           <select className="field !mt-0 !w-auto" value={filter.sport} onChange={(e) => change({ sport: e.target.value, box: "" })} aria-label="Category">
             <option value="">All categories</option>
-            {sports.map((s) => <option key={s.sport} value={s.sport}>{s.sport} ({s.cards})</option>)}
+            {sports.map((s) => <option key={s.sport} value={s.sport}>{catName(s.sport)} ({s.cards})</option>)}
           </select>
           {sport && (
             <select className="field !mt-0 !w-auto" value={filter.box} onChange={(e) => change({ box: e.target.value })} aria-label="Box">

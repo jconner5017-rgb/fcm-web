@@ -1,3 +1,4 @@
+import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { flags, locationCode, money, seasonText, statusText, thumbUrl, photoUrl, type CardRow } from "@/lib/inventory";
 
@@ -36,7 +37,7 @@ export default function BoxTile({ c, from }: { c: CardRow; from: string }) {
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">
-        <span className="truncate text-[11px] font-bold uppercase tracking-wide text-link">{d.sport ?? ""}</span>
+        <span className="truncate text-[11px] font-bold uppercase tracking-wide text-link">{catName(d.sport)}</span>
         <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${live ? "bg-go text-white" : "border border-line text-muted"}`}>
           {status}
         </span>
