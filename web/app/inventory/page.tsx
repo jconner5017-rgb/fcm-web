@@ -141,6 +141,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
                 <option value="set">Set</option>
                 <option value="year">Year</option>
                 <option value="value">Value</option>
+                <option value="added">Date added</option>
                 <option value="updated">Recently changed</option>
               </AutoSubmit>
             </label>

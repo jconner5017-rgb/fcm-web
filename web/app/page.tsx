@@ -2,10 +2,11 @@ import Link from "next/link";
 import { apiGet, getMe } from "@/lib/api";
 import { ADDON_PRICE, addonActive, editionName, shortDate, when } from "@/lib/client";
 import type { Device } from "@/lib/types";
-import { money, type InvSummary } from "@/lib/inventory";
+import { href, type InvSummary } from "@/lib/inventory";
+import Dashboard, { type DashboardData } from "@/components/Dashboard";
 import ResendVerification from "@/components/ResendVerification";
 
-export default async function Home() {
+export default async function Home({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { me } = await getMe();
   if (!me) {
     return (
@@ -23,22 +24,50 @@ export default async function Home() {
     );
   }
 
-  const [devRes, sumRes] = await Promise.all([apiGet<{ devices: Device[] }>("/v1/devices"), apiGet<InvSummary>("/v1/inventory/summary")]);
+  const sp = await searchParams;
+  const edition = typeof sp.edition === "string" ? sp.edition : undefined;
+  const [devRes, sumRes, dashRes] = await Promise.all([
+    apiGet<{ devices: Device[] }>("/v1/devices"),
+    apiGet<InvSummary>(href("/v1/inventory/summary", { edition })),
+    apiGet<DashboardData>(href("/v1/inventory/dashboard", { edition })),
+  ]);
   const devices = devRes.data?.devices ?? [];
   const sum = sumRes.data;
+  const dash = dashRes.data;
   const a = me.account;
   const trialEnds = new Date(a.sync_trial_ends_at);
   const trialLeft = Math.ceil((trialEnds.getTime() - Date.now()) / 86400000);
 
   return (
     <div className="mt-8 space-y-6">
-      <h1 className="text-[26px] font-bold">Welcome back</h1>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-[28px] font-bold leading-tight">Welcome back</h1>
+          <p className="text-[14px] text-muted">Here&apos;s where your inventory stands today.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {sum && sum.editions.length > 1 && (
+            <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+              {sum.editions.map((e) => (
+                <Link key={e.edition} href={href("/", { edition: e.edition })}
+                  className={`rounded-full px-3 py-1 ${e.edition === sum.edition ? "bg-fire text-white" : "hover:text-fire"}`}>
+                  {e.edition === "tcg" ? "TCG" : "Sports"}
+                </Link>
+              ))}
+            </div>
+          )}
+          <Link href="/inventory" className="btn-ghost !py-1.5">Inventory</Link>
+          <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>
+        </div>
+      </div>
       {!a.email_verified && (
         <div className="card flex flex-wrap items-center justify-between gap-3 !border-fire">
           <p>Confirm your email address ({a.email}) so you can reset your password if you ever need to.</p>
           <ResendVerification />
         </div>
       )}
+
+      {dash && sum && sum.editions.length > 0 && <Dashboard d={dash} />}
 
       <div className="grid gap-4 md:grid-cols-3">
         <div className="card">
@@ -96,21 +125,6 @@ export default async function Home() {
         </section>
       )}
 
-      {sum && sum.editions.length > 0 && (
-        <section className="card">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-[18px] font-bold">Your inventory</h2>
-            <Link href="/inventory" className="btn !py-1.5">Browse cards</Link>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div><p className="text-[12px] text-muted">Cards</p><p className="num text-[20px] font-bold">{sum.cards.toLocaleString()}</p></div>
-            <div><p className="text-[12px] text-muted">Estimated value</p><p className="num text-[20px] font-bold">{money(sum.value)}</p></div>
-            <div><p className="text-[12px] text-muted">Boxes</p><p className="num text-[20px] font-bold">{sum.boxes.length}</p></div>
-            <div><p className="text-[12px] text-muted">Sold</p><Link href="/sold" className="num text-[20px] font-bold hover:text-fire">{sum.sold.toLocaleString()}</Link></div>
-          </div>
-          <p className="mt-3 text-[13px] text-muted">Open any card to edit it, move it or mark it sold. Your PC picks up the change on its next sync.</p>
-        </section>
-      )}
     </div>
   );
 }

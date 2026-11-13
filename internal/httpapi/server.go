@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inventory/sold", requireAccount(s.handleInvSold))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
 	mux.HandleFunc("GET /v1/inventory/tree", requireAccount(s.handleInvTree))
+	mux.HandleFunc("GET /v1/inventory/dashboard", requireAccount(s.handleInvDashboard))
 	mux.HandleFunc("PATCH /v1/inventory/cards/{id}", requireAccount(s.handleInvEdit))
 	mux.HandleFunc("POST /v1/inventory/cards/{id}/sold", requireAccount(s.handleInvMarkSold))
 	mux.HandleFunc("GET /v1/inventory/conflicts", requireAccount(s.handleInvConflicts))
@@ -1314,4 +1315,19 @@ func (s *Server) handleInvTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "sports": tree})
+}
+
+func (s *Server) handleInvDashboard(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	d, err := s.inv.Dashboard(r.Context(), sess.Account.ID, ed, s.now())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }

@@ -875,6 +875,13 @@ func TestInventory(t *testing.T) {
 	push(t, pc, map[string]any{"entity": "card", "id": uuid(607), "base_version": 1, "deleted": true, "edited_at": now},
 		map[string]any{"entity": "card", "id": uuid(608), "base_version": 1, "deleted": true, "edited_at": now})
 
+	// Dashboard numbers, worked out like the desktop's.
+	dash := owner.must(200, "GET", "/v1/inventory/dashboard", nil)
+	if dash["total_active_cards"].(float64) != 5 || dash["live_count"].(float64) != 1 || dash["ready_to_list_count"].(float64) != 3 ||
+		len(dash["sales_31d"].([]any)) != 31 || len(dash["recent"].([]any)) != 5 {
+		t.Fatalf("dashboard: %v", dash)
+	}
+
 	card := owner.must(200, "GET", "/v1/inventory/cards/"+uuid(601), nil)
 	if card["box_name"] != "Basketball 1" || card["data"].(map[string]any)["sku"] != "FCM-1471" {
 		t.Fatalf("card: %v", card)

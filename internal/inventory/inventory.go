@@ -306,6 +306,7 @@ var sorts = map[string]string{
 	"year":    `c.data->'year'`,
 	"value":   valueExpr,
 	"updated": `c.updated_at`,
+	"added":   `c.data->>'created_at'`,
 	// Box (base name, then its "(cont. N)" number, like the desktop), row, slot.
 	"slot": `lower(split_part(coalesce(b.data->>'name', '~'), ' (cont. ', 1)) %[1]s,
 		coalesce(substring(b.data->>'name' from '\(cont\. (\d+)\)')::int, 1) %[1]s,
