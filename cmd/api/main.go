@@ -18,6 +18,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/db"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
+	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
@@ -109,9 +110,17 @@ func run(log *slog.Logger) error {
 		Slabs: &slabs.Client{BaseURL: env("SLABS_API_URL", slabs.DefaultBaseURL)}, Log: log, Pause: 300 * time.Millisecond}
 	go listerSvc.Run(ctx)
 
+	ebaySvc := &ebay.Service{DB: database, Sealer: &auth.MFA{DB: database, Key: mfaKey},
+		AppID: os.Getenv("EBAY_APP_ID"), CertID: os.Getenv("EBAY_CERT_ID"), RuName: os.Getenv("EBAY_RU_NAME")}
+	if ebaySvc.Configured() && mfaKey != nil {
+		log.Info("eBay connection on")
+	} else {
+		log.Warn("EBAY_APP_ID / EBAY_CERT_ID / EBAY_RU_NAME (and MFA_ENCRYPTION_KEY) not all set: eBay on the website is off")
+	}
+
 	srv := httpapi.New(httpapi.Options{
 		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
-		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc, Lister: listerSvc,
+		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc, Lister: listerSvc, Ebay: ebaySvc,
 		Log: log, CookieSecure: appEnv != "dev", SessionTTL: authSvc.SessionTTL,
 		TrustProxy: env("TRUST_PROXY_HEADERS", "false") == "true", WebURL: webURL,
 	})

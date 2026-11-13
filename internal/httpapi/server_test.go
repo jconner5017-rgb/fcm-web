@@ -16,7 +16,9 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	imagepkg "image"
 	jpegpkg "image/jpeg"
@@ -25,6 +27,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -37,6 +40,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/db"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
+	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
@@ -47,14 +51,16 @@ import (
 )
 
 type env struct {
-	t      *testing.T
-	db     *sql.DB
-	srv    *httptest.Server
-	now    time.Time
-	bucket *fakeBucket
-	ai     *fakeAI
-	slabs  *fakeSlabs
-	lister *lister.Service
+	ebay    *fakeEbay
+	ebaySvc *ebay.Service
+	t       *testing.T
+	db      *sql.DB
+	srv     *httptest.Server
+	now     time.Time
+	bucket  *fakeBucket
+	ai      *fakeAI
+	slabs   *fakeSlabs
+	lister  *lister.Service
 }
 
 // fakeSlabs stands in for the Slabs & Singles seller API.
@@ -197,8 +203,13 @@ func setup(t *testing.T) *env {
 	key := make([]byte, 32)
 	rand.Read(key)
 	e.lister = &lister.Service{DB: d, Sync: syncSvc, Sealer: &auth.MFA{DB: d, Key: key}, Photos: photoSvc, Slabs: &slabs.Client{BaseURL: slabsSrv.URL}}
+	e.ebay = &fakeEbay{}
+	ebaySrv := httptest.NewServer(e.ebay)
+	t.Cleanup(ebaySrv.Close)
+	e.ebaySvc = &ebay.Service{DB: d, Sealer: &auth.MFA{DB: d, Key: key}, AppID: "App-PRD-1", CertID: "cert-secret", RuName: "Test-RuName",
+		AuthURL: ebaySrv.URL, APIURL: ebaySrv.URL, IDURL: ebaySrv.URL}
 	s := New(Options{
-		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key},
+		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key}, Ebay: e.ebaySvc,
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
 		AI: &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"}, Lister: e.lister,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), SessionTTL: time.Hour, WebURL: "https://app.test",
@@ -1566,4 +1577,106 @@ func TestLiveListings(t *testing.T) {
 	if l := owner.must(200, "GET", "/v1/live", nil); len(l["cards"].([]any)) != 1 {
 		t.Fatalf("after end: %v", l)
 	}
+}
+
+// fakeEbay stands in for eBay's OAuth token and identity endpoints.
+type fakeEbay struct {
+	mu       sync.Mutex
+	grants   []string
+	auth     string
+	refreshN int
+	expired  bool
+}
+
+func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.URL.Path {
+	case "/identity/v1/oauth2/token":
+		r.ParseForm()
+		f.auth = r.Header.Get("Authorization")
+		g := r.Form.Get("grant_type")
+		f.grants = append(f.grants, g+":"+r.Form.Get("code")+r.Form.Get("refresh_token")+":"+r.Form.Get("redirect_uri"))
+		if g == "refresh_token" && f.expired {
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"error":"invalid_grant","error_description":"expired"}`)
+			return
+		}
+		if g == "refresh_token" {
+			f.refreshN++
+			fmt.Fprintf(w, `{"access_token":"access-%d","expires_in":7200}`, f.refreshN+1)
+			return
+		}
+		fmt.Fprint(w, `{"access_token":"access-1","expires_in":7200,"refresh_token":"refresh-1","refresh_token_expires_in":47304000}`)
+	case "/commerce/identity/v1/user/":
+		fmt.Fprint(w, `{"username":"sportscardsforever"}`)
+	default:
+		w.WriteHeader(404)
+	}
+}
+
+func TestEbayConnect(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("ebay@example.com")
+	if st := owner.must(200, "GET", "/v1/ebay", nil); st["configured"] != true || st["connected"] != false {
+		t.Fatalf("status: %v", st)
+	}
+	start := owner.must(200, "POST", "/v1/ebay/connect", nil)
+	u, _ := url.Parse(start["url"].(string))
+	q := u.Query()
+	if u.Path != "/oauth2/authorize" || q.Get("client_id") != "App-PRD-1" || q.Get("redirect_uri") != "Test-RuName" || q.Get("response_type") != "code" ||
+		!strings.Contains(q.Get("scope"), "sell.inventory") || len(q.Get("state")) < 32 {
+		t.Fatalf("authorize url: %s", u)
+	}
+	state := q.Get("state")
+
+	// Someone else can't use this state; a wrong state fails.
+	other := e.signup("other@example.com")
+	other.must(400, "POST", "/v1/ebay/callback", map[string]any{"state": state, "code": "c"})
+	owner.must(400, "POST", "/v1/ebay/callback", map[string]any{"state": "nope", "code": "c"})
+
+	// other's attempt used the state up, so start again.
+	state2 := func() string {
+		s := owner.must(200, "POST", "/v1/ebay/connect", nil)
+		u, _ := url.Parse(s["url"].(string))
+		return u.Query().Get("state")
+	}()
+	done := owner.must(200, "POST", "/v1/ebay/callback", map[string]any{"state": state2, "code": "the-code"})
+	if done["user"] != "sportscardsforever" || e.ebay.grants[0] != "authorization_code:the-code:Test-RuName" ||
+		e.ebay.auth != "Basic "+base64.StdEncoding.EncodeToString([]byte("App-PRD-1:cert-secret")) {
+		t.Fatalf("finish: %v %v %s", done, e.ebay.grants, e.ebay.auth)
+	}
+	owner.must(400, "POST", "/v1/ebay/callback", map[string]any{"state": state2, "code": "again"}) // used once only
+	st := owner.must(200, "GET", "/v1/ebay", nil)
+	if st["connected"] != true || st["user"] != "sportscardsforever" {
+		t.Fatalf("connected: %v", st)
+	}
+	// Tokens are stored encrypted.
+	var box []byte
+	e.db.QueryRow(`SELECT refresh_enc FROM account_ebay`).Scan(&box)
+	if strings.Contains(string(box), "refresh-1") {
+		t.Fatal("refresh token stored in the clear")
+	}
+
+	// Access token: the saved one, then a refresh when it's about to expire.
+	var acct string
+	e.db.QueryRow(`SELECT id FROM accounts WHERE email = 'ebay@example.com'`).Scan(&acct)
+	ctx := context.Background()
+	if tok, err := e.ebaySvc.AccessToken(ctx, acct); err != nil || tok != "access-1" {
+		t.Fatalf("token: %q %v", tok, err)
+	}
+	e.db.Exec(`UPDATE account_ebay SET access_expires_at = now()`)
+	if tok, err := e.ebaySvc.AccessToken(ctx, acct); err != nil || tok != "access-2" {
+		t.Fatalf("refreshed: %q %v %v", tok, err, e.ebay.grants)
+	}
+	// eBay ends the connection: the seller is asked to connect again.
+	e.ebay.expired = true
+	e.db.Exec(`UPDATE account_ebay SET access_expires_at = now()`)
+	if _, err := e.ebaySvc.AccessToken(ctx, acct); !errors.Is(err, ebay.ErrReconnect) {
+		t.Fatalf("expired: %v", err)
+	}
+	if st := owner.must(200, "GET", "/v1/ebay", nil); st["connected"] != false {
+		t.Fatalf("after eBay ended it: %v", st)
+	}
+	owner.must(204, "DELETE", "/v1/ebay", nil)
 }

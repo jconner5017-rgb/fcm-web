@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
 import AIKeyForm, { type AIKey } from "@/components/AIKeyForm";
 import MarketKeyForm, { type MarketKey } from "@/components/MarketKeyForm";
+import EbayConnect, { type EbayStatus } from "@/components/EbayConnect";
 import { addonActive, shortDate } from "@/lib/client";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
@@ -12,7 +13,8 @@ export default async function AccountPage() {
   const { me } = await getMe();
   if (!me) redirect("/signin?next=/account");
   const a = me.account;
-  const [aiRes, mkRes] = await Promise.all([apiGet<{ ai_key: AIKey | null }>("/v1/me/ai-key"), apiGet<{ keys: MarketKey[] }>("/v1/me/market-keys")]);
+  const [aiRes, mkRes, ebRes] = await Promise.all([apiGet<{ ai_key: AIKey | null }>("/v1/me/ai-key"), apiGet<{ keys: MarketKey[] }>("/v1/me/market-keys"),
+    apiGet<EbayStatus>("/v1/ebay")]);
   const aiKey = aiRes.data?.ai_key ?? null;
   const slabsKey = mkRes.data?.keys.find((k) => k.market === "slabs") ?? null;
   return (
@@ -24,12 +26,16 @@ export default async function AccountPage() {
         <p><span className="text-muted">Member since:</span> {shortDate(a.created_at)}</p>
         <p>
           <span className="text-muted">Cloud sync:</span>{" "}
-          {addonActive(a) ? `web add-on until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
+          {addonActive(a) ? `paid until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
         </p>
       </section>
       <section className="card" id="ai-key">
         <h2 className="text-[18px] font-bold">AI key for phone identification</h2>
         <AIKeyForm initial={aiKey} />
+      </section>
+      <section className="card" id="ebay">
+        <h2 className="text-[18px] font-bold">eBay</h2>
+        <EbayConnect initial={ebRes.data ?? { configured: false, connected: false }} />
       </section>
       <section className="card" id="market-keys">
         <h2 className="text-[18px] font-bold">Slabs &amp; Singles key for the Bulk Lister</h2>

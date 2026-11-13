@@ -17,6 +17,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
+	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/export"
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
@@ -38,6 +39,7 @@ type Options struct {
 	Photos       *photos.Service
 	AI           *identify.Client // nil: the real AI services
 	Lister       *lister.Service  // the Bulk Lister (nil: off)
+	Ebay         *ebay.Service    // eBay connection (nil or unconfigured: off)
 	Log          *slog.Logger
 	CookieSecure bool
 	SessionTTL   time.Duration
@@ -56,6 +58,7 @@ type Server struct {
 	photos       *photos.Service
 	inv          *inventory.Service
 	lister       *lister.Service
+	ebay         *ebay.Service
 	log          *slog.Logger
 	cookieSecure bool
 	sessionTTL   time.Duration
@@ -74,7 +77,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, ebay: o.Ebay, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -129,6 +132,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/inventory/sold/{id}", requireAccount(s.handleSoldDelete))
 	mux.HandleFunc("POST /v1/inventory/sold/shipped", requireAccount(s.handleSoldShipped))
 	mux.HandleFunc("GET /v1/live", requireAccount(s.handleLive))
+	mux.HandleFunc("GET /v1/ebay", requireAccount(s.handleEbayStatus))
+	mux.HandleFunc("POST /v1/ebay/connect", requireAccount(s.handleEbayConnect))
+	mux.HandleFunc("POST /v1/ebay/callback", requireAccount(s.handleEbayCallback))
+	mux.HandleFunc("DELETE /v1/ebay", requireAccount(s.handleEbayDisconnect))
 	mux.HandleFunc("POST /v1/live/slabs/end", requireAccount(s.handleLiveSlabsEnd))
 	mux.HandleFunc("POST /v1/live/slabs/price", requireAccount(s.handleLiveSlabsPrice))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
@@ -1099,6 +1106,89 @@ func (s *Server) handleSoldShipped(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"marked": res.Marked, "slabs_orders": len(res.SlabsOrders), "problems": problems})
+}
+
+// ---------------- eBay connection ----------------
+
+func (s *Server) ebayError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, ebay.ErrNotConfigured):
+		writeError(w, http.StatusServiceUnavailable, "ebay_off", "eBay isn't switched on for FireCardManager Web yet.", nil)
+	case errors.Is(err, ebay.ErrBadState):
+		writeError(w, http.StatusBadRequest, "ebay_state", "That eBay sign-in link expired or was already used. Click Connect eBay again.", nil)
+	case errors.Is(err, ebay.ErrNotConnected):
+		writeError(w, http.StatusConflict, "ebay_not_connected", "Connect your eBay account on the Account page first.", nil)
+	case errors.Is(err, ebay.ErrReconnect):
+		writeError(w, http.StatusConflict, "ebay_reconnect", "eBay ended the connection. Connect eBay again on the Account page.", nil)
+	default:
+		s.log.Warn("ebay", "err", err)
+		writeError(w, http.StatusBadGateway, "ebay", "eBay didn't answer as expected. Try again in a minute.", nil)
+	}
+}
+
+func (s *Server) handleEbayStatus(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	if s.ebay == nil {
+		writeJSON(w, http.StatusOK, ebay.Status{})
+		return
+	}
+	st, err := s.ebay.Status(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleEbayConnect(w http.ResponseWriter, r *http.Request) {
+	if s.ebay == nil {
+		s.ebayError(w, r, ebay.ErrNotConfigured)
+		return
+	}
+	sess, _ := currentSession(r)
+	u, err := s.ebay.StartURL(r.Context(), sess.Account.ID)
+	if err != nil {
+		if errors.Is(err, ebay.ErrNotConfigured) {
+			s.ebayError(w, r, err)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": u})
+}
+
+func (s *Server) handleEbayCallback(w http.ResponseWriter, r *http.Request) {
+	if s.ebay == nil {
+		s.ebayError(w, r, ebay.ErrNotConfigured)
+		return
+	}
+	var in struct {
+		State string `json:"state"`
+		Code  string `json:"code"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	user, err := s.ebay.Finish(r.Context(), sess.Account.ID, in.State, in.Code)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	s.log.Info("ebay connected", "account", sess.Account.ID)
+	writeJSON(w, http.StatusOK, map[string]string{"user": user})
+}
+
+func (s *Server) handleEbayDisconnect(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	if s.ebay != nil {
+		if err := s.ebay.Disconnect(r.Context(), sess.Account.ID); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------- Live Listings ----------------
