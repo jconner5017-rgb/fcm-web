@@ -169,6 +169,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/addon", s.requireAdmin(s.handleAdminAddon))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/trial", s.requireAdmin(s.handleAdminTrial))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/close", s.requireAdmin(s.handleAdminClose))
+	mux.HandleFunc("POST /v1/me/close", requireAccount(s.limited(s.authLimiter, s.handleCloseAccount)))
 
 	var h http.Handler = mux
 	h = s.loadSession(h)
@@ -513,6 +515,74 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleCloseAccount closes the signed-in account (privacy policy: deleted
+// from our servers within 30 days; the hourly cleanup does it sooner).
+func (s *Server) handleCloseAccount(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	var in struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	err := s.auth.Close(r.Context(), sess.Account.ID, in.Password, true)
+	if validationError(w, err) {
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.log.Info("account closed", "account", sess.Account.ID)
+	s.clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAdminClose(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	id := r.PathValue("id")
+	if id == sess.Account.ID {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Close your own account from the Account page.", nil)
+		return
+	}
+	if err := s.auth.Close(r.Context(), id, "", false); err != nil {
+		if errors.Is(err, auth.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "Account not found.", nil)
+			return
+		}
+		s.internalError(w, r, err)
+		return
+	}
+	s.log.Info("account closed by admin", "account", id, "admin", sess.Account.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PurgeClosed deletes closed accounts: photos from storage first, then the
+// account and everything in it. Run hourly.
+func PurgeClosed(ctx context.Context, a *auth.Service, p *photos.Service) (int, error) {
+	ids, err := a.Closing(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, id := range ids {
+		done := false
+		for i := 0; i < 200 && !done; i++ {
+			if done, err = p.DeleteAll(ctx, id); err != nil {
+				return n, err
+			}
+		}
+		if !done {
+			continue // more next time
+		}
+		if err := a.Remove(ctx, id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (s *Server) handleMFASetup(w http.ResponseWriter, r *http.Request) {

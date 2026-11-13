@@ -316,6 +316,66 @@ func (s *Service) ChangePassword(ctx context.Context, accountID, current, next s
 	return s.SetPassword(ctx, s.DB, accountID, next)
 }
 
+// Close switches the account off now and queues it for deletion (photos,
+// inventory, keys, eBay connection, everything) by PurgeClosed. With
+// checkPassword, password must be the account's password.
+func (s *Service) Close(ctx context.Context, accountID, password string, checkPassword bool) error {
+	if checkPassword {
+		var hash string
+		if err := s.DB.QueryRowContext(ctx, `SELECT password_hash FROM accounts WHERE id = $1`, accountID).Scan(&hash); err != nil {
+			return err
+		}
+		if !VerifyPassword(password, hash) {
+			return &ValidationError{Fields: map[string]string{"password": "That isn't your password."}}
+		}
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET status = 'disabled', closing_at = now(), updated_at = now() WHERE id::text = $1`, accountID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	// Signed out everywhere, PCs unlinked, saved keys and eBay forgotten right away.
+	for _, q := range []string{`DELETE FROM sessions WHERE account_id::text = $1`, `UPDATE devices SET revoked_at = now() WHERE account_id::text = $1 AND revoked_at IS NULL`,
+		`DELETE FROM account_ai_keys WHERE account_id::text = $1`, `DELETE FROM account_market_keys WHERE account_id::text = $1`,
+		`DELETE FROM account_ebay WHERE account_id::text = $1`} {
+		if _, err := tx.ExecContext(ctx, q, accountID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Closing lists accounts waiting to be deleted.
+func (s *Service) Closing(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM accounts WHERE closing_at IS NOT NULL ORDER BY closing_at LIMIT 20`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// Remove deletes a closing account and everything in it (call after its photos are gone).
+func (s *Service) Remove(ctx context.Context, accountID string) error {
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM accounts WHERE id = $1 AND closing_at IS NOT NULL`, accountID)
+	return err
+}
+
 type execer interface {
 	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
 }

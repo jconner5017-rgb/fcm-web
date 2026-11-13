@@ -32,6 +32,14 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
     setMsg(months > 0 ? `Web add-on for ${a.email} now runs until ${shortDate(until)}.` : `Web add-on ended for ${a.email}.`);
   }
 
+  async function closeAccount(a: AdminAccount) {
+    if (prompt(`Close ${a.email}? Everything online for this account is deleted within the hour (privacy policy). Type CLOSE to confirm:`) !== "CLOSE") return;
+    const r = await send("POST", `/v1/admin/accounts/${a.id}/close`);
+    if (!r.ok) return setMsg(r.message);
+    setRows(rows.filter((x) => x.id !== a.id));
+    setMsg(`${a.email} closed; its data is deleted at the next hourly cleanup.`);
+  }
+
   async function trial(a: AdminAccount) {
     const d = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
     const until = prompt(`Extend ${a.email}'s sync trial until (YYYY-MM-DD):`, d);
@@ -87,6 +95,7 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
                       <button type="button" onClick={() => addon(a, 0)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">End</button>
                     )}
                     <button type="button" onClick={() => trial(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">Extend trial</button>
+                    {!a.is_admin && <button type="button" onClick={() => closeAccount(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px] text-bad">Close</button>}
                   </td>
                 </tr>
               );

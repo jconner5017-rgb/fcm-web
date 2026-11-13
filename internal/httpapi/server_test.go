@@ -52,6 +52,7 @@ import (
 
 type env struct {
 	ebay    *fakeEbay
+	photos  *photos.Service
 	ebaySvc *ebay.Service
 	t       *testing.T
 	db      *sql.DB
@@ -199,6 +200,7 @@ func setup(t *testing.T) *env {
 	syncSvc := &cloudsync.Service{DB: d}
 	photoSvc := &photos.Service{DB: d, Sync: syncSvc,
 		Store: &photos.S3{Endpoint: bucketSrv.URL, Bucket: "fcm-photos", Region: "auto", AccessKey: "test", SecretKey: "test"}}
+	e.photos = photoSvc
 	authSvc := &auth.Service{DB: d, SessionTTL: time.Hour, AdminEmails: []string{"owner@example.com"}}
 	key := make([]byte, 32)
 	rand.Read(key)
@@ -1679,4 +1681,34 @@ func TestEbayConnect(t *testing.T) {
 		t.Fatalf("after eBay ended it: %v", st)
 	}
 	owner.must(204, "DELETE", "/v1/ebay", nil)
+}
+
+func TestCloseAccount(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("closer@example.com")
+	c := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "import": true, "fields": map[string]any{"sport": "Baseball"}})
+	out := owner.must(200, "POST", "/v1/inventory/cards/"+c["id"].(string)+"/photo-urls", map[string]any{"photos": []map[string]any{{"side": "front", "bytes": 3}}})
+	slot := out["uploads"].([]any)[0].(map[string]any)
+	req, _ := http.NewRequest("PUT", slot["upload_url"].(string), bytes.NewReader([]byte("abc")))
+	http.DefaultClient.Do(req)
+	owner.must(200, "POST", "/v1/inventory/photos/confirm", map[string]any{"photo_ids": []string{slot["photo_id"].(string)}})
+	if len(e.bucket.objects) != 1 {
+		t.Fatalf("photo stored: %d", len(e.bucket.objects))
+	}
+
+	owner.must(422, "POST", "/v1/me/close", map[string]any{"password": "wrong password here"})
+	owner.must(204, "POST", "/v1/me/close", map[string]any{"password": "long enough pw"})
+	owner.must(401, "GET", "/v1/me", nil) // signed out
+
+	var acct string
+	e.db.QueryRow(`SELECT id FROM accounts WHERE email = 'closer@example.com'`).Scan(&acct)
+	n, err := PurgeClosed(context.Background(), &auth.Service{DB: e.db}, e.photos)
+	if err != nil || n != 1 {
+		t.Fatalf("purge: %d %v", n, err)
+	}
+	var left int
+	e.db.QueryRow(`SELECT count(*) FROM accounts WHERE email = 'closer@example.com'`).Scan(&left)
+	if left != 0 || len(e.bucket.objects) != 0 {
+		t.Fatalf("left: %d accounts, %d photos", left, len(e.bucket.objects))
+	}
 }

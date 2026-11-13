@@ -302,6 +302,37 @@ func (s *Service) PublicPhoto(ctx context.Context, photoID string) (io.ReadClose
 	return body, size, nil
 }
 
+// DeleteAll removes up to 500 of the account's photos from storage (and
+// their records); done is true when none are left. For closing accounts.
+func (s *Service) DeleteAll(ctx context.Context, accountID string) (done bool, err error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, object_key FROM sync_photos WHERE account_id = $1 LIMIT 500`, accountID)
+	if err != nil {
+		return false, err
+	}
+	type item struct{ id, key string }
+	var items []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.id, &it.key); err != nil {
+			rows.Close()
+			return false, err
+		}
+		items = append(items, it)
+	}
+	rows.Close()
+	for _, it := range items {
+		if s.Enabled() && !strings.HasPrefix(it.key, "pending-") {
+			if err := s.Store.Delete(ctx, it.key); err != nil {
+				return false, err
+			}
+		}
+		if _, err := s.DB.ExecContext(ctx, `DELETE FROM sync_photos WHERE id = $1`, it.id); err != nil {
+			return false, err
+		}
+	}
+	return len(items) == 0, nil
+}
+
 // Cleanup deletes objects that were replaced, and forgets uploads that were
 // never confirmed within a day. Run periodically.
 func (s *Service) Cleanup(ctx context.Context) (int, error) {

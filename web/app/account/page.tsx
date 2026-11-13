@@ -6,6 +6,7 @@ import EbayConnect, { type EbayStatus } from "@/components/EbayConnect";
 import { addonActive, shortDate } from "@/lib/client";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
+import CloseAccount from "@/components/CloseAccount";
 
 export const metadata = { title: "Account" };
 
@@ -48,6 +49,10 @@ export default async function AccountPage() {
       <section className="card">
         <h2 className="text-[18px] font-bold">Change password</h2>
         <ChangePassword />
+      </section>
+      <section className="card" id="close">
+        <h2 className="text-[18px] font-bold">Close account</h2>
+        <CloseAccount />
       </section>
     </div>
   );

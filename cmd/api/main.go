@@ -146,6 +146,11 @@ func run(log *slog.Logger) error {
 					log.Warn("purge sessions", "err", err)
 				}
 				database.ExecContext(ctx, `DELETE FROM device_links WHERE expires_at < now() - interval '1 day'`)
+				if n, err := httpapi.PurgeClosed(ctx, authSvc, photoSvc); err != nil {
+					log.Warn("purge closed accounts", "err", err)
+				} else if n > 0 {
+					log.Info("closed accounts deleted", "count", n)
+				}
 				if n, err := photoSvc.Cleanup(ctx); err != nil {
 					log.Warn("photo cleanup", "err", err)
 				} else if n > 0 {
