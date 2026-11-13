@@ -1,4 +1,4 @@
-# Render Blueprint: FCM Web staging (app-staging.firecardmanager.com).
+# Render Blueprint: FCM Web (app.firecardmanager.com).
 # Kept apart from the Slabs & Singles services so neither can take the
 # other down. Render redeploys on every push to main.
 services:
@@ -12,11 +12,11 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: APP_ENV
-        value: staging
+        value: production
       - key: TRUST_PROXY_HEADERS
         value: "true"
       - key: WEB_URL
-        value: https://app-staging.firecardmanager.com
+        value: https://app.firecardmanager.com
       - key: MFA_ENCRYPTION_KEY
         generateValue: true  # random 256-bit key; never commit one
       - key: ADMIN_EMAILS
