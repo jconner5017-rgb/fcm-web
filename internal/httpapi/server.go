@@ -692,7 +692,7 @@ func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request, needAllowed 
 	}
 	if needAllowed && !a.SyncAllowed(s.now()) {
 		writeError(w, http.StatusPaymentRequired, "sync_inactive",
-			"Cloud sync is off: the free trial or the FireCardManager Web add-on has ended. It's $19.95 for 6 months or $39.95 for 12 with an FCM license. The desktop app keeps working either way.", nil)
+			"Cloud sync is off: the free trial or the FireCardManager Web add-on has ended. It's $39.99 for 6 months or $59.99 for 12, or $59.99 / $89.99 together with FCM desktop. The desktop app keeps working either way.", nil)
 		return cloudsync.Device{}, auth.Account{}, false
 	}
 	return cloudsync.Device{ID: d.ID, AccountID: d.AccountID, Edition: d.Edition}, a, true
@@ -768,7 +768,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Months int    `json:"months"` // 6 or 12; 0 ends the add-on now
-		Plan   string `json:"plan"`   // addon (default) or standalone
+		Plan   string `json:"plan"`   // web (default) or bundle
 		Note   string `json:"note"`
 	}
 	if !decodeJSON(w, r, &in) {
@@ -802,7 +802,7 @@ func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("web add-on extended", "account", id, "months", in.Months, "plan", in.Plan, "until", until)
-	writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": until, "web_plan": map[bool]string{true: in.Plan, false: "addon"}[in.Plan != ""]})
+	writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": until, "web_plan": map[bool]string{true: in.Plan, false: "web"}[in.Plan != ""]})
 }
 
 func (s *Server) handleAdminTrial(w http.ResponseWriter, r *http.Request) {

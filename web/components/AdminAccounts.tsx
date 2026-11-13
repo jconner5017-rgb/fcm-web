@@ -5,19 +5,20 @@ import { addonActive, send, shortDate, when } from "@/lib/client";
 import type { AdminAccount } from "@/lib/types";
 
 const PRICES = {
-  addon: { 6: "$19.95", 12: "$39.95" } as Record<number, string>,
-  standalone: { 6: "$29.95", 12: "$49.95" } as Record<number, string>,
+  web: { 6: "$39.99", 12: "$59.99" } as Record<number, string>,
+  bundle: { 6: "$59.99", 12: "$89.99" } as Record<number, string>,
 };
+const PLAN_NAMES: Record<string, string> = { web: "Web", bundle: "Bundle", addon: "Add-on", standalone: "Standalone" };
 
 export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) {
   const [rows, setRows] = useState(initial);
   const [msg, setMsg] = useState("");
 
-  async function addon(a: AdminAccount, months: 0 | 6 | 12, plan: "addon" | "standalone" = "addon") {
+  async function addon(a: AdminAccount, months: 0 | 6 | 12, plan: "web" | "bundle" = "web") {
     let note = "";
     if (months > 0) {
       const price = PRICES[plan][months];
-      const what = plan === "addon" ? "the web add-on (with an FCM license)" : "FireCardManager Web on its own";
+      const what = plan === "bundle" ? "the FCM + FCM Web bundle" : "FireCardManager Web";
       const n = prompt(`Add ${months} months of ${what} (${price}) for ${a.email}?\nNote (order number, amount):`, `${price} - `);
       if (n === null) return;
       note = n;
@@ -69,19 +70,19 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
                   </td>
                   <td className="py-2 pr-3">{shortDate(a.created_at)}</td>
                   <td className="py-2 pr-3">
-                    {addonActive(a) ? <span className="font-semibold text-go">{a.web_plan === "standalone" ? "Standalone" : "Add-on"} to {shortDate(a.web_addon_until)}</span>
+                    {addonActive(a) ? <span className="font-semibold text-go">{PLAN_NAMES[a.web_plan || "addon"] ?? "Paid"} to {shortDate(a.web_addon_until)}</span>
                       : trialOn ? `Trial to ${shortDate(a.sync_trial_ends_at)}` : <span className="text-bad">Off</span>}
                   </td>
                   <td className="num py-2 pr-3 text-right">{a.devices}</td>
                   <td className="num py-2 pr-3 text-right">{a.cards.toLocaleString()}</td>
                   <td className="py-2 pr-3">{when(a.last_sync)}</td>
                   <td className="py-2 text-right whitespace-nowrap">
-                    <span className="mr-1 text-[12px] text-muted">Add-on</span>
+                    <span className="mr-1 text-[12px] text-muted">Web</span>
                     <button type="button" onClick={() => addon(a, 6)} className="btn !px-3 !py-1 text-[13px]">+6 mo</button>
                     <button type="button" onClick={() => addon(a, 12)} className="btn ml-1 !px-3 !py-1 text-[13px]">+12 mo</button>
-                    <span className="ml-3 mr-1 text-[12px] text-muted">Standalone</span>
-                    <button type="button" onClick={() => addon(a, 6, "standalone")} className="btn !px-3 !py-1 text-[13px]">+6 mo</button>
-                    <button type="button" onClick={() => addon(a, 12, "standalone")} className="btn ml-1 !px-3 !py-1 text-[13px]">+12 mo</button>
+                    <span className="ml-3 mr-1 text-[12px] text-muted">Bundle</span>
+                    <button type="button" onClick={() => addon(a, 6, "bundle")} className="btn !px-3 !py-1 text-[13px]">+6 mo</button>
+                    <button type="button" onClick={() => addon(a, 12, "bundle")} className="btn ml-1 !px-3 !py-1 text-[13px]">+12 mo</button>
                     {addonActive(a) && (
                       <button type="button" onClick={() => addon(a, 0)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">End</button>
                     )}

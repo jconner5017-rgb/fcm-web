@@ -45,8 +45,8 @@ type Account struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
-// AddonActive: FireCardManager Web is paid up, as an add-on to an FCM
-// license ($19.95 / 6 months, $39.95 / 12) or on its own ($29.95 / $49.95).
+// AddonActive: FireCardManager Web is paid up (alone, $39.99 / 6 months or
+// $59.99 / 12, or in the bundle with FCM desktop, $59.99 / $89.99).
 func (a Account) AddonActive(now time.Time) bool {
 	return a.WebAddonUntil != nil && now.Before(*a.WebAddonUntil)
 }
@@ -383,11 +383,12 @@ func (s *Service) ListAccounts(ctx context.Context, q string, limit int) ([]Admi
 }
 
 // AddonMonths are the terms sold: 6 and 12 months, matching the FCM license
-// lengths. WebPlans: "addon" ($19.95 / $39.95, with an FCM or FCM TCG license)
-// or "standalone" ($29.95 / $49.95, the web app on its own).
+// lengths. WebPlans: "web" (FCM Web alone, $39.99 / $59.99) or "bundle"
+// (FCM desktop + FCM Web, $59.99 / $89.99). "addon" and "standalone" were
+// earlier plans; accounts on them keep running until their date.
 var AddonMonths = map[int]bool{6: true, 12: true}
 
-var WebPlans = map[string]bool{"addon": true, "standalone": true}
+var WebPlans = map[string]bool{"web": true, "bundle": true, "addon": true, "standalone": true}
 
 // ExtendWebAddon adds months to an account's web add-on, counted from its
 // current end date if it's still running (a renewal loses no days),
@@ -397,10 +398,10 @@ func (s *Service) ExtendWebAddon(ctx context.Context, accountID string, months i
 		return time.Time{}, &ValidationError{Fields: map[string]string{"months": "Use 6 or 12 months."}}
 	}
 	if plan == "" {
-		plan = "addon"
+		plan = "web"
 	}
 	if !WebPlans[plan] {
-		return time.Time{}, &ValidationError{Fields: map[string]string{"plan": "Use addon or standalone."}}
+		return time.Time{}, &ValidationError{Fields: map[string]string{"plan": "Use web or bundle."}}
 	}
 	note = strings.TrimSpace(note)
 	if len(note) > 300 {

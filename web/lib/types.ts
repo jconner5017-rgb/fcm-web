@@ -7,7 +7,7 @@ export type Account = {
   sync_trial_ends_at: string;
   web_addon_at?: string;
   web_addon_until?: string;
-  web_plan?: "addon" | "standalone" | "";
+  web_plan?: "web" | "bundle" | "addon" | "standalone" | "";
   created_at: string;
 };
 

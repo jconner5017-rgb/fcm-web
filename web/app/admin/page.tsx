@@ -23,7 +23,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   return (
     <div className="mt-8">
       <h1 className="text-[26px] font-bold">Accounts</h1>
-      <p className="mt-1 text-muted">After a customer pays, add their months. Add-on (with an FCM or FCM TCG license): $19.95 for 6 months, $39.95 for 12. Standalone (web app only): $29.95 for 6 months, $49.95 for 12. A renewal adds on to the current end date. You can also give a trial a few more days.</p>
+      <p className="mt-1 text-muted">After a customer pays, add their months. FCM Web alone: $39.99 for 6 months, $59.99 for 12. Bundle (FCM desktop + FCM Web): $59.99 for 6 months, $89.99 for 12 (also issue their FCM license key). A renewal adds on to the current end date. You can also give a trial a few more days.</p>
       <form className="mt-4 flex gap-2" action="/admin" method="get">
         <input name="q" defaultValue={q} placeholder="Search by email" className="field !mt-0 max-w-[320px]" />
         <button type="submit" className="btn-ghost">Search</button>
