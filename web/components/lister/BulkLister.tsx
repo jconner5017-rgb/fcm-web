@@ -20,7 +20,7 @@ function problems(c: CardRow, auction: boolean): string[] {
   return p;
 }
 
-type EbayState = { on: boolean; connected: boolean; missing: string[]; profiles: Profile[] };
+type EbayState = { on: boolean; connected: boolean; missing: string[]; profiles: Profile[]; templates: { id: string; name: string; is_default: boolean }[] };
 
 export default function BulkLister({ edition, sports, hasKey, ebay, initialIds = [] }: {
   edition: string; sports: TreeSport[]; hasKey: boolean; ebay: EbayState; initialIds?: string[];
@@ -28,6 +28,7 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
   const [market, setMarket] = useState<"slabs" | "ebay">("slabs");
   const ebayReady = ebay.on && ebay.connected && ebay.missing.length === 0;
   const [profile, setProfile] = useState(ebay.profiles[0]?.id ?? "");
+  const [template, setTemplate] = useState(ebay.templates.find((t) => t.is_default)?.id ?? ebay.templates[0]?.id ?? "");
   useEffect(() => {
     try { const v = localStorage.getItem("fcm-ship-profile"); if (v && ebay.profiles.some((p) => p.id === v)) setProfile(v); } catch {}
   }, [ebay.profiles]);
@@ -101,6 +102,7 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
       auction, duration_days: duration, default_start_bid: num(startBid), buy_it_now_at_sale_price: binAtPrice,
       allow_offers: !auction && offers, accept_percent: offers ? num(accept) : null, decline_percent: offers ? num(decline) : null,
       shipping_profile: market === "ebay" ? profile : undefined,
+      template: market === "ebay" ? template : undefined,
     };
     if (market === "ebay") try { localStorage.setItem("fcm-ship-profile", profile); } catch {}
     const body: Record<string, unknown> = { edition, market, options };
@@ -224,6 +226,15 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
                 {ebay.profiles.map((p) => <option key={p.id} value={p.id}>{profileSummary(p)}</option>)}
               </select>
               <a href="/account#ebay" className="text-[11px] font-normal text-link">Edit shipping profiles</a>
+            </label>
+          )}
+          {market === "ebay" && (
+            <label className="block text-[13px] font-semibold">Listing template
+              <select className="field" value={template} onChange={(e) => setTemplate(e.target.value)}>
+                {ebay.templates.length === 0 && <option value="">Store Branded (FireCardManager&apos;s default)</option>}
+                {ebay.templates.map((t) => <option key={t.id} value={t.id}>{t.is_default ? "★ " : ""}{t.name}</option>)}
+              </select>
+              <a href="/templates" className="text-[11px] font-normal text-link">See and edit templates</a>
             </label>
           )}
 

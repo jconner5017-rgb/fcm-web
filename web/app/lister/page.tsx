@@ -22,9 +22,10 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
     apiGet<{ jobs: Run[] }>("/v1/lister/jobs"),
   ]);
   const eb = (await apiGet<{ configured: boolean; connected: boolean; settings_missing?: string[]; profiles?: Profile[] }>("/v1/ebay")).data;
-  const tpls = (await apiGet<{ templates: { id: string; name: string; is_default: boolean }[] }>(href("/v1/templates", { edition: ed }))).data?.templates ?? [];
-  const ebay = { on: !!eb?.configured, connected: !!eb?.connected, missing: eb?.settings_missing ?? [], profiles: eb?.profiles ?? [], templates: tpls };
+  const ebay0 = { on: !!eb?.configured, connected: !!eb?.connected, missing: eb?.settings_missing ?? [], profiles: eb?.profiles ?? [] };
   const ed = tree.data?.edition ?? "sports";
+  const tpls = (await apiGet<{ templates: { id: string; name: string; is_default: boolean }[] }>(href("/v1/templates", { edition: ed }))).data?.templates ?? [];
+  const ebay = { ...ebay0, templates: tpls };
   const hasKey = !!keys.data?.keys.some((k) => k.market === "slabs");
   return (
     <div className="mt-6">
