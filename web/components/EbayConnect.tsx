@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { send, shortDate } from "@/lib/client";
+import EbaySettings from "./EbaySettings";
 
 export type EbayStatus = { configured: boolean; connected: boolean; user?: string; connected_at?: string; expires_at?: string };
 
@@ -41,6 +42,7 @@ export default function EbayConnect({ initial }: { initial: EbayStatus }) {
             <button type="button" className="btn-ghost" disabled={busy} onClick={connect}>Connect again</button>
             <button type="button" className="btn-ghost text-bad" disabled={busy} onClick={disconnect}>Disconnect</button>
           </div>
+          <EbaySettings />
         </>
       ) : (
         <>

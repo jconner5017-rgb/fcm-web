@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
+	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/lib/pq"
 )
@@ -44,8 +45,11 @@ type Service struct {
 	Sealer Sealer
 	Photos PhotoReader
 	Slabs  *slabs.Client
-	Log    *slog.Logger
-	Pause  time.Duration // between cards (be gentle with the marketplace)
+	Ebay   *ebay.Service
+	// PhotoLink is a card photo's hosted link (what eBay copies the photos from).
+	PhotoLink func(photoID string) string
+	Log       *slog.Logger
+	Pause     time.Duration // between cards (be gentle with the marketplace)
 }
 
 // ---------------- keys ----------------
@@ -183,11 +187,17 @@ type Job struct {
 // Start queues a run over the given cards (the account's, in this edition,
 // still in inventory); the worker picks it up within a couple of seconds.
 func (s *Service) Start(ctx context.Context, accountID, edition, market, jobID string, cardIDs []string, opts slabs.Options) (Job, error) {
-	if market != "slabs" {
+	switch market {
+	case "slabs":
+		if _, _, err := s.key(ctx, accountID, market); err != nil {
+			return Job{}, err
+		}
+	case "ebay":
+		if err := s.ebayReady(ctx, accountID); err != nil {
+			return Job{}, err
+		}
+	default:
 		return Job{}, fmt.Errorf("unknown marketplace")
-	}
-	if _, _, err := s.key(ctx, accountID, market); err != nil {
-		return Job{}, err
 	}
 	if len(cardIDs) == 0 {
 		return Job{}, ErrNoCards
@@ -327,7 +337,12 @@ func (s *Service) RunOnce(ctx context.Context) (bool, error) {
 	}
 	var o slabs.Options
 	_ = json.Unmarshal(opts, &o)
-	status, msg := s.listOne(ctx, accountID, edition, cardID, o)
+	var status, msg string
+	if market == "ebay" {
+		status, msg = s.listEbay(ctx, accountID, edition, cardID, o)
+	} else {
+		status, msg = s.listOne(ctx, accountID, edition, cardID, o)
+	}
 	_, err = s.DB.ExecContext(ctx, `UPDATE list_job_items SET status = $3, message = NULLIF($4, ''), done_at = now()
 		WHERE job_id = $1 AND position = $2`, jobID, position, status, msg)
 	if s.Pause > 0 {

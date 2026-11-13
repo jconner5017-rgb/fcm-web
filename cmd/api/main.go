@@ -20,6 +20,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/export"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
@@ -117,6 +118,8 @@ func run(log *slog.Logger) error {
 	} else {
 		log.Warn("EBAY_APP_ID / EBAY_CERT_ID / EBAY_RU_NAME (and MFA_ENCRYPTION_KEY) not all set: eBay on the website is off")
 	}
+
+	listerSvc.Ebay, listerSvc.PhotoLink = ebaySvc, export.HostedLinks(webURL)
 
 	srv := httpapi.New(httpapi.Options{
 		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,

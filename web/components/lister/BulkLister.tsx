@@ -19,7 +19,13 @@ function problems(c: CardRow, auction: boolean): string[] {
   return p;
 }
 
-export default function BulkLister({ edition, sports, hasKey, initialIds = [] }: { edition: string; sports: TreeSport[]; hasKey: boolean; initialIds?: string[] }) {
+type EbayState = { on: boolean; connected: boolean; missing: string[] };
+
+export default function BulkLister({ edition, sports, hasKey, ebay, initialIds = [] }: {
+  edition: string; sports: TreeSport[]; hasKey: boolean; ebay: EbayState; initialIds?: string[];
+}) {
+  const [market, setMarket] = useState<"slabs" | "ebay">("slabs");
+  const ebayReady = ebay.on && ebay.connected && ebay.missing.length === 0;
   const router = useRouter();
   // Cards sent from the Card Editor arrive picked, with any status shown.
   const [filter, setFilter] = useState<Filter>({ sport: "", box: "", status: initialIds.length ? "" : "Ready", q: "" });
@@ -87,7 +93,7 @@ export default function BulkLister({ edition, sports, hasKey, initialIds = [] }:
       auction, duration_days: duration, default_start_bid: num(startBid), buy_it_now_at_sale_price: binAtPrice,
       allow_offers: !auction && offers, accept_percent: offers ? num(accept) : null, decline_percent: offers ? num(decline) : null,
     };
-    const body: Record<string, unknown> = { edition, market: "slabs", options };
+    const body: Record<string, unknown> = { edition, market, options };
     if (allMatching) body.filter = { sport: filter.sport, box: filter.box, status: filter.status, q: filter.q };
     else body.card_ids = [...picked];
     setBusy(true);
@@ -184,11 +190,12 @@ export default function BulkLister({ edition, sports, hasKey, initialIds = [] }:
           <div>
             <p className="text-[13px] font-semibold">List on</p>
             <div className="mt-2 grid gap-2">
-              <label className="flex items-center gap-2 rounded-lg border border-fire px-3 py-2 text-[14px]">
-                <input type="radio" checked readOnly /> Slabs &amp; Singles
+              <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[14px] ${market === "slabs" ? "border-fire" : "border-line"}`}>
+                <input type="radio" checked={market === "slabs"} onChange={() => setMarket("slabs")} /> Slabs &amp; Singles
               </label>
-              <label className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-[14px] text-muted">
-                <input type="radio" disabled /> eBay <span className="ml-auto text-[11px]">coming next</span>
+              <label className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-[14px] ${market === "ebay" ? "border-fire" : "border-line"} ${ebay.on ? "cursor-pointer" : "text-muted"}`}>
+                <input type="radio" checked={market === "ebay"} disabled={!ebay.on} onChange={() => setMarket("ebay")} /> eBay
+                {!ebay.on && <span className="ml-auto text-[11px]">coming soon</span>}
               </label>
             </div>
           </div>
@@ -231,19 +238,32 @@ export default function BulkLister({ edition, sports, hasKey, initialIds = [] }:
             </div>
           )}
 
-          {!hasKey && (
+          {market === "ebay" && !ebayReady && (
+            <p className="rounded-lg border border-fire px-3 py-2 text-[13px]">
+              {!ebay.connected ? <>Connect eBay on the <a href="/account#ebay" className="font-semibold text-fire">Account page</a> first.</>
+                : <>Pick your eBay {ebay.missing.join(", ")} on the <a href="/account#ebay" className="font-semibold text-fire">Account page</a> first.</>}
+            </p>
+          )}
+          {market === "slabs" && !hasKey && (
             <p className="rounded-lg border border-fire px-3 py-2 text-[13px]">
               Add a Slabs &amp; Singles key made <b>for FireCardManager Web</b> on the <a href="/account#market-keys" className="font-semibold text-fire">Account page</a> first.
             </p>
           )}
           {error && <p role="alert" className="text-[13px] text-bad">{error}</p>}
-          <button type="button" className="btn w-full" disabled={busy || count === 0 || !hasKey} onClick={start}>
-            {busy ? "Starting..." : `List ${count.toLocaleString()} card${count === 1 ? "" : "s"} on Slabs & Singles`}
+          <button type="button" className="btn w-full" disabled={busy || count === 0 || (market === "slabs" ? !hasKey : !ebayReady)} onClick={start}>
+            {busy ? "Starting..." : `List ${count.toLocaleString()} card${count === 1 ? "" : "s"} on ${market === "ebay" ? "eBay" : "Slabs & Singles"}`}
           </button>
-          <p className="text-[12px] text-muted">
-            Uses your package and weight settings from FireCardManager. Cards already on Slabs &amp; Singles are updated. Cards that can&apos;t be listed
-            yet are skipped with the reason. Your PC shows them live after its next sync.
-          </p>
+          {market === "slabs" ? (
+            <p className="text-[12px] text-muted">
+              Uses your package and weight settings from FireCardManager. Cards already on Slabs &amp; Singles are updated. Cards that can&apos;t be listed
+              yet are skipped with the reason. Your PC shows them live after its next sync.
+            </p>
+          ) : (
+            <p className="text-[12px] text-muted">
+              Listed like FireCardManager does: the Store Branded template with your photos, item specifics and your business policies (Account &gt; eBay).
+              Cards already on eBay are updated. Your PC shows them live after its next sync.
+            </p>
+          )}
         </div>
       </aside>
     </div>

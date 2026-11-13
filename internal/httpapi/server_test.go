@@ -42,6 +42,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/export"
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/license"
@@ -210,6 +211,7 @@ func setup(t *testing.T) *env {
 	t.Cleanup(ebaySrv.Close)
 	e.ebaySvc = &ebay.Service{DB: d, Sealer: &auth.MFA{DB: d, Key: key}, AppID: "App-PRD-1", CertID: "cert-secret", RuName: "Test-RuName",
 		AuthURL: ebaySrv.URL, APIURL: ebaySrv.URL, IDURL: ebaySrv.URL}
+	e.lister.Ebay, e.lister.PhotoLink = e.ebaySvc, export.HostedLinks("https://app.test")
 	s := New(Options{
 		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key}, Ebay: e.ebaySvc,
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
@@ -1588,6 +1590,9 @@ type fakeEbay struct {
 	auth     string
 	refreshN int
 	expired  bool
+	offers   []string
+	items    []string
+	calls    []string
 }
 
 func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1612,8 +1617,42 @@ func (f *fakeEbay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"access_token":"access-1","expires_in":7200,"refresh_token":"refresh-1","refresh_token_expires_in":47304000}`)
 	case "/commerce/identity/v1/user/":
 		fmt.Fprint(w, `{"username":"sportscardsforever"}`)
+	case "/sell/account/v1/fulfillment_policy":
+		fmt.Fprint(w, `{"fulfillmentPolicies":[{"fulfillmentPolicyId":"F1","name":"PWE $1"}]}`)
+	case "/sell/account/v1/payment_policy":
+		fmt.Fprint(w, `{"paymentPolicies":[{"paymentPolicyId":"P1","name":"eBay payments"}]}`)
+	case "/sell/account/v1/return_policy":
+		fmt.Fprint(w, `{"returnPolicies":[{"returnPolicyId":"R1","name":"30 days"}]}`)
+	case "/sell/inventory/v1/location":
+		fmt.Fprint(w, `{"locations":[{"merchantLocationKey":"FCM-HOME","name":"Home","location":{"address":{"city":"Tampa","postalCode":"33601"}}}]}`)
+	case "/sell/inventory/v1/offer":
+		b, _ := io.ReadAll(r.Body)
+		f.offers = append(f.offers, string(b))
+		if len(f.offers) > 1 {
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"errors":[{"errorId":25002,"message":"Offer entity already exists.","parameters":[{"name":"offerId","value":"OFF-1"}]}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"offerId":"OFF-1"}`)
 	default:
-		w.WriteHeader(404)
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/sell/inventory/v1/inventory_item/"):
+			b, _ := io.ReadAll(r.Body)
+			f.items = append(f.items, strings.TrimPrefix(r.URL.Path, "/sell/inventory/v1/inventory_item/")+" "+string(b))
+			w.WriteHeader(204)
+		case strings.HasPrefix(r.URL.Path, "/sell/inventory/v1/location/"):
+			f.calls = append(f.calls, "location "+strings.TrimPrefix(r.URL.Path, "/sell/inventory/v1/location/"))
+			w.WriteHeader(204)
+		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/sell/inventory/v1/offer/"):
+			b, _ := io.ReadAll(r.Body)
+			f.calls = append(f.calls, "update "+strings.TrimPrefix(r.URL.Path, "/sell/inventory/v1/offer/")+" "+string(b))
+			w.WriteHeader(204)
+		case strings.HasSuffix(r.URL.Path, "/publish"):
+			f.calls = append(f.calls, "publish "+r.URL.Path)
+			fmt.Fprint(w, `{"listingId":"387000111"}`)
+		default:
+			w.WriteHeader(404)
+		}
 	}
 }
 
@@ -1710,5 +1749,91 @@ func TestCloseAccount(t *testing.T) {
 	e.db.QueryRow(`SELECT count(*) FROM accounts WHERE email = 'closer@example.com'`).Scan(&left)
 	if left != 0 || len(e.bucket.objects) != 0 {
 		t.Fatalf("left: %d accounts, %d photos", left, len(e.bucket.objects))
+	}
+}
+
+func TestEbayListing(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("seller-ebay@example.com")
+	pc := e.link(owner, "sports", "HWID-EB", "")
+	card := uuid(991)
+	push(t, pc, ch("card", card, 0, time.Now(), map[string]any{"sku": "FCM-77", "sport": "Basketball", "player_name": "Victor Wembanyama",
+		"team": "Spurs", "year": 2023, "season_end": 2024, "brand": "Panini", "set_name": "Prizm", "card_number": "136", "variety": "Silver",
+		"condition": "Raw - NM", "sale_price": 49.99, "status": "Ready", "is_rookie": true}))
+	jpeg := bytes.Repeat([]byte{0xFF, 0xD8}, 300)
+	up := pc.must(200, "POST", "/v1/photos/upload-urls", map[string]any{"photos": []map[string]any{{"card_id": card, "side": "front", "bytes": len(jpeg)}}})
+	slot := up["uploads"].([]any)[0].(map[string]any)
+	req, _ := http.NewRequest("PUT", slot["upload_url"].(string), bytes.NewReader(jpeg))
+	http.DefaultClient.Do(req)
+	pc.must(200, "POST", "/v1/photos/confirm", map[string]any{"photo_ids": []string{slot["photo_id"].(string)}})
+
+	// Not connected yet.
+	if code, res := owner.do("POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card}}); code != 409 || errCode(res) != "ebay_setup" {
+		t.Fatalf("not connected: %d %v", code, res)
+	}
+	st := owner.must(200, "POST", "/v1/ebay/connect", nil)
+	u, _ := url.Parse(st["url"].(string))
+	owner.must(200, "POST", "/v1/ebay/callback", map[string]any{"state": u.Query().Get("state"), "code": "c"})
+	// Connected, but no policies picked.
+	if code, res := owner.do("POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card}}); code != 409 ||
+		!strings.Contains(res["error"].(map[string]any)["message"].(string), "shipping policy") {
+		t.Fatalf("no policies: %d %v", code, res)
+	}
+	setupRes := owner.must(200, "GET", "/v1/ebay/setup", nil)
+	if setupRes["shipping"].([]any)[0].(map[string]any)["id"] != "F1" || setupRes["locations"].([]any)[0].(map[string]any)["key"] != "FCM-HOME" {
+		t.Fatalf("setup: %v", setupRes)
+	}
+	loc := owner.must(200, "POST", "/v1/ebay/location", map[string]any{"postal_code": "33601"})
+	if loc["key"] != "FCMWEB-33601" {
+		t.Fatalf("location: %v", loc)
+	}
+	owner.must(200, "PUT", "/v1/ebay/settings", map[string]any{"fulfillment_policy_id": "F1", "payment_policy_id": "P1", "return_policy_id": "R1",
+		"location_key": "FCM-HOME", "store_name": "Card Cave"})
+
+	job := owner.must(201, "POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card},
+		"options": map[string]any{"allow_offers": true, "accept_percent": 90, "decline_percent": 60}})
+	for {
+		did, err := e.lister.RunOnce(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !did {
+			break
+		}
+	}
+	got := owner.must(200, "GET", "/v1/lister/jobs/"+job["id"].(string), nil)
+	it := got["items"].([]any)[0].(map[string]any)
+	if it["status"] != "listed" {
+		t.Fatalf("item: %v", it)
+	}
+	item := e.ebay.items[0]
+	if !strings.HasPrefix(item, "FCM-77 ") || !strings.Contains(item, `"title":"2023-24 Panini Prizm Victor Wembanyama #136 Silver Raw - NM"`) ||
+		!strings.Contains(item, `https://app.test/api/v1/p/`+slot["photo_id"].(string)+`.jpg`) || !strings.Contains(item, `"Sport":["Basketball"]`) ||
+		!strings.Contains(item, `"name":"40001","values":["400010"]`) || !strings.Contains(item, `"condition":"USED_VERY_GOOD"`) {
+		t.Fatalf("inventory item: %s", item)
+	}
+	offer := e.ebay.offers[0]
+	for _, want := range []string{`"categoryId":"214"`, `"fulfillmentPolicyId":"F1"`, `"merchantLocationKey":"FCM-HOME"`, `"price":{"currency":"USD","value":"49.99"}`,
+		`"autoAcceptPrice":{"currency":"USD","value":"44.99"}`, `"autoDeclinePrice":{"currency":"USD","value":"29.99"}`, `Card Cave`} {
+		if !strings.Contains(offer, want) {
+			t.Fatalf("offer missing %s: %s", want, offer)
+		}
+	}
+	c := owner.must(200, "GET", "/v1/inventory/cards/"+card, nil)["data"].(map[string]any)
+	if c["status"] != "EBF" || c["ebay_listing_id"] != "387000111" || c["ebay_offer_id"] != "OFF-1" {
+		t.Fatalf("card after listing: %v", c)
+	}
+
+	// Listing it again updates the same offer.
+	job = owner.must(201, "POST", "/v1/lister/jobs", map[string]any{"market": "ebay", "card_ids": []string{card}})
+	for {
+		did, _ := e.lister.RunOnce(context.Background())
+		if !did {
+			break
+		}
+	}
+	got = owner.must(200, "GET", "/v1/lister/jobs/"+job["id"].(string), nil)
+	if s := got["items"].([]any)[0].(map[string]any)["status"]; s != "updated" || !strings.HasPrefix(e.ebay.calls[len(e.ebay.calls)-2], "update OFF-1") {
+		t.Fatalf("relist: %v %v", s, e.ebay.calls)
 	}
 }

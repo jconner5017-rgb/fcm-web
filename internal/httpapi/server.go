@@ -136,6 +136,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/ebay/connect", requireAccount(s.handleEbayConnect))
 	mux.HandleFunc("POST /v1/ebay/callback", requireAccount(s.handleEbayCallback))
 	mux.HandleFunc("DELETE /v1/ebay", requireAccount(s.handleEbayDisconnect))
+	mux.HandleFunc("GET /v1/ebay/setup", requireAccount(s.handleEbaySetup))
+	mux.HandleFunc("PUT /v1/ebay/settings", requireAccount(s.handleEbaySettings))
+	mux.HandleFunc("POST /v1/ebay/location", requireAccount(s.handleEbayLocation))
 	mux.HandleFunc("POST /v1/live/slabs/end", requireAccount(s.handleLiveSlabsEnd))
 	mux.HandleFunc("POST /v1/live/slabs/price", requireAccount(s.handleLiveSlabsPrice))
 	mux.HandleFunc("GET /v1/inventory/boxes", requireAccount(s.handleInvBoxes))
@@ -1207,7 +1210,17 @@ func (s *Server) handleEbayStatus(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	missing := []string{}
+	if s.lister != nil {
+		es, err := s.lister.EbaySettings(r.Context(), sess.Account.ID)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		missing = append(missing, es.Missing()...)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"configured": st.Configured, "connected": st.Connected, "user": st.User,
+		"connected_at": st.ConnectedAt, "expires_at": st.ExpiresAt, "settings_missing": missing})
 }
 
 func (s *Server) handleEbayConnect(w http.ResponseWriter, r *http.Request) {
@@ -1248,6 +1261,89 @@ func (s *Server) handleEbayCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("ebay connected", "account", sess.Account.ID)
 	writeJSON(w, http.StatusOK, map[string]string{"user": user})
+}
+
+// handleEbaySetup is what the eBay settings need: the seller's business
+// policies and ship-from locations on eBay, and what's picked.
+func (s *Server) handleEbaySetup(w http.ResponseWriter, r *http.Request) {
+	sess, _ := currentSession(r)
+	if s.ebay == nil || s.lister == nil {
+		s.ebayError(w, r, ebay.ErrNotConfigured)
+		return
+	}
+	token, err := s.ebay.AccessToken(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	ship, pay, ret, err := s.ebay.Policies(r.Context(), token)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	locs, err := s.ebay.Locations(r.Context(), token)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	st, err := s.lister.EbaySettings(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": st, "shipping": ship, "payment": pay, "returns": ret, "locations": locs})
+}
+
+func (s *Server) handleEbaySettings(w http.ResponseWriter, r *http.Request) {
+	if s.lister == nil {
+		s.ebayError(w, r, ebay.ErrNotConfigured)
+		return
+	}
+	var in ebay.Settings
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	in.StoreName = strings.TrimSpace(in.StoreName)
+	if len(in.StoreName) > 80 {
+		in.StoreName = in.StoreName[:80]
+	}
+	sess, _ := currentSession(r)
+	if err := s.lister.SaveEbaySettings(r.Context(), sess.Account.ID, in); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": in})
+}
+
+// handleEbayLocation adds a ship-from location from a ZIP code.
+func (s *Server) handleEbayLocation(w http.ResponseWriter, r *http.Request) {
+	if s.ebay == nil {
+		s.ebayError(w, r, ebay.ErrNotConfigured)
+		return
+	}
+	var in struct {
+		PostalCode string `json:"postal_code"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	zip := strings.TrimSpace(in.PostalCode)
+	if len(zip) < 5 || len(zip) > 10 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Enter the ZIP code you ship from.", map[string]string{"postal_code": "Enter a ZIP code."})
+		return
+	}
+	sess, _ := currentSession(r)
+	token, err := s.ebay.AccessToken(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	key := "FCMWEB-" + strings.NewReplacer(" ", "", "-", "").Replace(zip)
+	if err := s.ebay.CreateLocation(r.Context(), token, key, zip); err != nil {
+		s.ebayError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"key": key})
 }
 
 func (s *Server) handleEbayDisconnect(w http.ResponseWriter, r *http.Request) {
@@ -1876,6 +1972,8 @@ func (s *Server) handleListerStart(w http.ResponseWriter, r *http.Request) {
 			"Add a Slabs & Singles key made for FireCardManager Web on the Account page.", nil)
 	case errors.Is(err, lister.ErrNoCards):
 		writeError(w, http.StatusUnprocessableEntity, "no_cards", "Pick at least one card that's still in your inventory.", nil)
+	case errors.As(err, new(*lister.ErrEbaySetup)):
+		writeError(w, http.StatusConflict, "ebay_setup", err.Error(), nil)
 	case err != nil:
 		s.internalError(w, r, err)
 	default:

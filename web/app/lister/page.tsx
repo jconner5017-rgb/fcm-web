@@ -20,6 +20,8 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
     apiGet<{ keys: { market: string }[] }>("/v1/me/market-keys"),
     apiGet<{ jobs: Run[] }>("/v1/lister/jobs"),
   ]);
+  const eb = (await apiGet<{ configured: boolean; connected: boolean; settings_missing?: string[] }>("/v1/ebay")).data;
+  const ebay = { on: !!eb?.configured, connected: !!eb?.connected, missing: eb?.settings_missing ?? [] };
   const ed = tree.data?.edition ?? "sports";
   const hasKey = !!keys.data?.keys.some((k) => k.market === "slabs");
   return (
@@ -44,7 +46,7 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
         <p className="card mt-5">Listing from the website needs the FireCardManager Web add-on (your free trial has ended).</p>
       ) : (
         <div className="mt-5">
-          <BulkLister key={ed} edition={ed} sports={tree.data?.sports ?? []} hasKey={hasKey} initialIds={ids} />
+          <BulkLister key={ed} edition={ed} sports={tree.data?.sports ?? []} hasKey={hasKey} ebay={ebay} initialIds={ids} />
         </div>
       )}
       {(runs.data?.jobs.length ?? 0) > 0 && (
