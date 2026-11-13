@@ -495,3 +495,40 @@ func (s *Service) Status(ctx context.Context, d Device) (Status, error) {
 		d.AccountID, d.Edition, soldStatus).Scan(&st.LatestSeq, &st.Cards, &st.AllCards, &st.Boxes, &st.Sold, &st.OpenConflicts)
 	return st, err
 }
+
+// ServerSet changes fields on a row on the server's own behalf (a photo
+// finished uploading, say) and adds it to the change feed so every device
+// pulls the new values. device is "" when no device made the change.
+func (s *Service) ServerSet(ctx context.Context, tx *sql.Tx, accountID, entity, id, device string, fields map[string]json.RawMessage) (int, error) {
+	table, ok := tables[entity]
+	if !ok {
+		return 0, errors.New("unknown entity")
+	}
+	var edition string
+	var version int
+	var dataRaw, metaRaw []byte
+	var deletedAt sql.NullTime
+	err := tx.QueryRowContext(ctx, `SELECT edition, version, data, field_meta, deleted_at FROM `+table+`
+		WHERE id = $1 AND account_id = $2 FOR UPDATE`, id, accountID).Scan(&edition, &version, &dataRaw, &metaRaw, &deletedAt)
+	if err != nil {
+		return 0, err
+	}
+	if deletedAt.Valid {
+		return version, nil
+	}
+	data := map[string]json.RawMessage{}
+	meta := map[string]fieldMeta{}
+	if err := json.Unmarshal(dataRaw, &data); err != nil {
+		return 0, err
+	}
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		return 0, err
+	}
+	version++
+	for k, v := range fields {
+		data[k] = v
+		meta[k] = fieldMeta{V: version, At: s.now()}
+	}
+	d := Device{ID: device, AccountID: accountID, Edition: edition}
+	return version, s.write(ctx, tx, entity, d, id, version, data, meta, nil, false)
+}

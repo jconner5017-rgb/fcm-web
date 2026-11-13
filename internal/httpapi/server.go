@@ -16,6 +16,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
+	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 )
 
 const sessionCookie = "fcm_session"
@@ -27,6 +28,7 @@ type Options struct {
 	Mail         *email.Service
 	Devices      *devices.Service
 	Sync         *cloudsync.Service
+	Photos       *photos.Service
 	Log          *slog.Logger
 	CookieSecure bool
 	SessionTTL   time.Duration
@@ -42,6 +44,7 @@ type Server struct {
 	mail         *email.Service
 	devices      *devices.Service
 	sync         *cloudsync.Service
+	photos       *photos.Service
 	log          *slog.Logger
 	cookieSecure bool
 	sessionTTL   time.Duration
@@ -60,7 +63,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -100,6 +103,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sync/status", s.requireDevice(s.handleSyncStatus))
 	mux.HandleFunc("POST /v1/sync/push", s.requireDevice(s.handleSyncPush))
 	mux.HandleFunc("GET /v1/sync/pull", s.requireDevice(s.handleSyncPull))
+	mux.HandleFunc("POST /v1/photos/upload-urls", s.requireDevice(s.handlePhotoUploadURLs))
+	mux.HandleFunc("POST /v1/photos/confirm", s.requireDevice(s.handlePhotoConfirm))
+	mux.HandleFunc("GET /v1/photos/{id}", s.handlePhotoView) // website (session) or desktop (device token)
 
 	// Admin (owner, with 2FA on)
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
@@ -758,4 +764,85 @@ func (s *Server) handleAdminTrial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---------------- photos ----------------
+
+func (s *Server) photoError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, photos.ErrNotConfigured):
+		writeError(w, http.StatusServiceUnavailable, "photos_off", "Photo upload isn't switched on yet. Cards still sync; photos follow later.", nil)
+	case errors.Is(err, photos.ErrTooMany):
+		writeError(w, http.StatusRequestEntityTooLarge, "batch_too_big", err.Error(), nil)
+	case errors.Is(err, photos.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "Photo not found.", nil)
+	default:
+		s.internalError(w, r, err)
+	}
+}
+
+func (s *Server) handlePhotoUploadURLs(w http.ResponseWriter, r *http.Request) {
+	d, _, ok := s.syncDevice(w, r, true)
+	if !ok {
+		return
+	}
+	var in struct {
+		Photos []photos.UploadRequest `json:"photos"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	slots, err := s.photos.UploadURLs(r.Context(), d, in.Photos)
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"uploads": slots})
+}
+
+func (s *Server) handlePhotoConfirm(w http.ResponseWriter, r *http.Request) {
+	d, _, ok := s.syncDevice(w, r, true)
+	if !ok {
+		return
+	}
+	var in struct {
+		PhotoIDs []string `json:"photo_ids"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	res, err := s.photos.Confirm(r.Context(), d, in.PhotoIDs)
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"photos": res})
+}
+
+// handlePhotoView sends the browser (or app) to a short-lived link for the
+// photo. With ?format=json it answers {"url": ...} instead of redirecting.
+func (s *Server) handlePhotoView(w http.ResponseWriter, r *http.Request) {
+	var accountID string
+	if sess, ok := currentSession(r); ok && sess.MFAOK {
+		accountID = sess.Account.ID
+	} else if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		if d, err := s.devices.ByToken(r.Context(), strings.TrimSpace(tok)); err == nil {
+			accountID = d.AccountID
+		}
+	}
+	if accountID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in first.", nil)
+		return
+	}
+	u, err := s.photos.ViewURL(r.Context(), accountID, r.PathValue("id"))
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	if r.URL.Query().Get("format") == "json" {
+		writeJSON(w, http.StatusOK, map[string]string{"url": u})
+		return
+	}
+	http.Redirect(w, r, u, http.StatusFound)
 }

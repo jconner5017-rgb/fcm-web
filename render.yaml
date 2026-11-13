@@ -27,6 +27,14 @@ services:
         sync: false
       - key: EMAIL_FROM
         value: FireCardManager <no-reply@firecardmanager.com>
+      - key: R2_ENDPOINT     # https://<account id>.r2.cloudflarestorage.com
+        sync: false
+      - key: R2_BUCKET
+        value: fcm-photos
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: fcm-db

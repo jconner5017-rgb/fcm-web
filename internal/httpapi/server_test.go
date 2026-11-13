@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,13 +36,49 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/license"
+	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 )
 
 type env struct {
-	t   *testing.T
-	db  *sql.DB
-	srv *httptest.Server
-	now time.Time
+	t      *testing.T
+	db     *sql.DB
+	srv    *httptest.Server
+	now    time.Time
+	bucket *fakeBucket
+}
+
+// fakeBucket stands in for R2: it stores whatever is PUT to a signed link.
+// (Signatures are checked against AWS's own example in the photos package.)
+type fakeBucket struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+}
+
+func (b *fakeBucket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch r.Method {
+	case "PUT":
+		if r.URL.Query().Get("X-Amz-Signature") == "" && r.Header.Get("Authorization") == "" {
+			w.WriteHeader(403)
+			return
+		}
+		data, _ := io.ReadAll(r.Body)
+		b.objects[r.URL.Path] = data
+	case "HEAD", "GET":
+		data, ok := b.objects[r.URL.Path]
+		if !ok {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		if r.Method == "GET" {
+			w.Write(data)
+		}
+	case "DELETE":
+		delete(b.objects, r.URL.Path)
+		w.WriteHeader(204)
+	}
 }
 
 func setup(t *testing.T) *env {
@@ -60,16 +97,21 @@ func setup(t *testing.T) *env {
 	if err := db.Migrate(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox CASCADE`); err != nil {
+	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, db: d}
+	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}}
+	bucketSrv := httptest.NewServer(e.bucket)
+	t.Cleanup(bucketSrv.Close)
+	syncSvc := &cloudsync.Service{DB: d}
+	photoSvc := &photos.Service{DB: d, Sync: syncSvc,
+		Store: &photos.S3{Endpoint: bucketSrv.URL, Bucket: "fcm-photos", Region: "auto", AccessKey: "test", SecretKey: "test"}}
 	authSvc := &auth.Service{DB: d, SessionTTL: time.Hour, AdminEmails: []string{"owner@example.com"}}
 	key := make([]byte, 32)
 	rand.Read(key)
 	s := New(Options{
 		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key},
-		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: &cloudsync.Service{DB: d},
+		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), SessionTTL: time.Hour, WebURL: "https://app.test",
 	})
 	e.srv = httptest.NewServer(s.Handler())
@@ -548,4 +590,92 @@ func TestWritesNeedJSON(t *testing.T) {
 	if res.StatusCode != 415 {
 		t.Fatalf("form-style post: %d", res.StatusCode)
 	}
+}
+
+func TestPhotos(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("photos@example.com")
+	pcA := e.link(owner, "sports", "HWID-P1", "")
+	pcB := e.link(owner, "sports", "HWID-P2", "")
+	card := uuid(77)
+	push(t, pcA, ch("card", card, 0, time.Now(), map[string]any{"player_name": "Nikola Topic", "status": "Ready"}))
+
+	jpeg := bytes.Repeat([]byte{0xFF, 0xD8, 0xFF}, 1000)
+	out := pcA.must(200, "POST", "/v1/photos/upload-urls", map[string]any{"photos": []map[string]any{
+		{"card_id": card, "side": "front", "bytes": len(jpeg)},
+		{"card_id": uuid(999), "side": "front", "bytes": 10}, // no such card
+		{"card_id": card, "side": "sideways", "bytes": 10},   // bad side
+		{"card_id": card, "side": "back", "bytes": 50 << 20}, // too big
+	}})
+	ups := out["uploads"].([]any)
+	first := ups[0].(map[string]any)
+	if first["upload_url"] == nil || first["error"] != nil {
+		t.Fatalf("upload slot: %v", first)
+	}
+	for i := 1; i < 4; i++ {
+		if ups[i].(map[string]any)["error"] == nil {
+			t.Fatalf("slot %d should be refused: %v", i, ups[i])
+		}
+	}
+	photoID := first["photo_id"].(string)
+
+	// Confirming before the upload lands says missing; the card is untouched.
+	res := pcA.must(200, "POST", "/v1/photos/confirm", map[string]any{"photo_ids": []string{photoID}})
+	if res["photos"].([]any)[0].(map[string]any)["status"] != "missing" {
+		t.Fatalf("confirm before upload: %v", res)
+	}
+	req, _ := http.NewRequest("PUT", first["upload_url"].(string), bytes.NewReader(jpeg))
+	req.Header.Set("Content-Type", "image/jpeg")
+	if r, err := http.DefaultClient.Do(req); err != nil || r.StatusCode != 200 {
+		t.Fatalf("upload to bucket: %v %v", r, err)
+	}
+	res = pcA.must(200, "POST", "/v1/photos/confirm", map[string]any{"photo_ids": []string{photoID}})
+	if c := res["photos"].([]any)[0].(map[string]any); c["status"] != "ready" || c["card_version"].(float64) != 2 {
+		t.Fatalf("confirm: %v", res)
+	}
+
+	// The other PC pulls the card with its new photo id and can fetch it.
+	rows, _ := pull(t, pcB, 0)
+	if rows[card]["fields"].(map[string]any)["front_photo_id"] != photoID {
+		t.Fatalf("pull: %v", rows[card])
+	}
+	view := pcB.must(200, "GET", "/v1/photos/"+photoID+"?format=json", nil)
+	got, err := http.Get(view["url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(got.Body)
+	got.Body.Close()
+	if !bytes.Equal(body, jpeg) {
+		t.Fatalf("downloaded %d bytes", len(body))
+	}
+
+	// The website gets a redirect to the same short-lived link.
+	noFollow := &http.Client{Jar: owner.http.Jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	rr, _ := noFollow.Get(e.srv.URL + "/v1/photos/" + photoID)
+	if rr.StatusCode != 302 || !strings.Contains(rr.Header.Get("Location"), "X-Amz-Signature=") {
+		t.Fatalf("website view: %d %s", rr.StatusCode, rr.Header.Get("Location"))
+	}
+
+	// Someone else's account can't see it.
+	stranger := e.link(e.signup("nosy@example.com"), "sports", "HWID-N", "")
+	stranger.must(404, "GET", "/v1/photos/"+photoID, nil)
+
+	// A new front replaces the old one; cleanup removes the old object.
+	out = pcA.must(200, "POST", "/v1/photos/upload-urls", map[string]any{"photos": []map[string]any{{"card_id": card, "side": "front", "bytes": 5}}})
+	slot := out["uploads"].([]any)[0].(map[string]any)
+	req, _ = http.NewRequest("PUT", slot["upload_url"].(string), bytes.NewReader([]byte("12345")))
+	http.DefaultClient.Do(req)
+	pcA.must(200, "POST", "/v1/photos/confirm", map[string]any{"photo_ids": []string{slot["photo_id"].(string)}})
+	if len(e.bucket.objects) != 2 {
+		t.Fatalf("objects before cleanup: %d", len(e.bucket.objects))
+	}
+	ps := &photos.Service{DB: e.db, Store: &photos.S3{Endpoint: strings.Split(first["upload_url"].(string), "/fcm-photos/")[0], Bucket: "fcm-photos", Region: "auto", AccessKey: "test", SecretKey: "test"}}
+	if n, err := ps.Cleanup(context.Background()); err != nil || n != 1 {
+		t.Fatalf("cleanup: %d %v", n, err)
+	}
+	if len(e.bucket.objects) != 1 {
+		t.Fatalf("objects after cleanup: %d", len(e.bucket.objects))
+	}
+	pcA.must(404, "GET", "/v1/photos/"+photoID, nil) // the replaced photo is gone
 }

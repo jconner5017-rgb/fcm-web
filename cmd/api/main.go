@@ -20,6 +20,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
+	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 )
 
 func main() {
@@ -92,9 +93,19 @@ func run(log *slog.Logger) error {
 		log.Warn("EMAIL_PROVIDER not set: verification and reset emails are not sent")
 	}
 
+	syncSvc := &cloudsync.Service{DB: database}
+	photoSvc := &photos.Service{DB: database, Sync: syncSvc}
+	if ep := env("R2_ENDPOINT", ""); ep != "" {
+		photoSvc.Store = &photos.S3{Endpoint: ep, Bucket: env("R2_BUCKET", "fcm-photos"), Region: env("R2_REGION", "auto"),
+			AccessKey: os.Getenv("R2_ACCESS_KEY_ID"), SecretKey: os.Getenv("R2_SECRET_ACCESS_KEY")}
+		log.Info("photo storage", "bucket", photoSvc.Store.Bucket)
+	} else {
+		log.Warn("R2_ENDPOINT not set: photo upload is off (cards still sync)")
+	}
+
 	srv := httpapi.New(httpapi.Options{
 		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
-		Devices: &devices.Service{DB: database}, Sync: &cloudsync.Service{DB: database},
+		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc,
 		Log: log, CookieSecure: appEnv != "dev", SessionTTL: authSvc.SessionTTL,
 		TrustProxy: env("TRUST_PROXY_HEADERS", "false") == "true", WebURL: webURL,
 	})
@@ -120,6 +131,11 @@ func run(log *slog.Logger) error {
 					log.Warn("purge sessions", "err", err)
 				}
 				database.ExecContext(ctx, `DELETE FROM device_links WHERE expires_at < now() - interval '1 day'`)
+				if n, err := photoSvc.Cleanup(ctx); err != nil {
+					log.Warn("photo cleanup", "err", err)
+				} else if n > 0 {
+					log.Info("old photos removed", "count", n)
+				}
 			}
 		}
 	}()

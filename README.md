@@ -21,11 +21,19 @@ Spec: "FCM Web — Phase 1 Spec: Cloud Sync + Web Inventory".
 | `POST /v1/devices/link/finish` | desktop | polled until approved; returns the device token once |
 | `GET /v1/devices`, `DELETE /v1/devices/{id}` | website | linked PCs |
 | `GET /v1/sync/status`, `POST /v1/sync/push`, `GET /v1/sync/pull?after=` | desktop (Bearer device token) | sync |
+| `POST /v1/photos/upload-urls`, `POST /v1/photos/confirm` | desktop | signed links to upload card photos straight to R2, then confirm |
+| `GET /v1/photos/{id}` | website or desktop | redirect to a 10-minute link for the photo (`?format=json` for the link itself) |
 | `GET /v1/admin/accounts`, `POST /v1/admin/accounts/{id}/addon`, `/trial` | owner (admin + 2FA) | web add-on and trials |
 
 Sync rows are `box`, `card` and `sold`. Field names are lower_snake_case.
 The server reads `status` (`NotForSale`, `Ready`, `EBA`, `EBF`, `Sold`) and
 `box_id` (the box's sync id) on cards; everything else is stored as sent.
+
+Photos: the bucket is private. Confirming a photo sets the card's
+`front_photo_id`, `back_photo_id`, `front_thumb_photo_id` or
+`back_thumb_photo_id` through the sync feed. Settings: `R2_ENDPOINT`,
+`R2_BUCKET` (default fcm-photos), `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
+Without them photo upload is off and cards still sync.
 
 ## Tests
 
