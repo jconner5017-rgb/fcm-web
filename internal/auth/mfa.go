@@ -301,7 +301,8 @@ func (m *MFA) Reset(ctx context.Context, accountID string) error {
 	return err
 }
 
-// ParseKey reads MFA_ENCRYPTION_KEY: 64 hex characters or base64 of 32 bytes.
+// ParseKey reads MFA_ENCRYPTION_KEY: 64 hex characters, base64 of 32 bytes,
+// or any random string of 32+ characters.
 func ParseKey(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -315,5 +316,11 @@ func ParseKey(s string) ([]byte, error) {
 			return b, nil
 		}
 	}
-	return nil, errors.New("MFA_ENCRYPTION_KEY must be 32 bytes as 64 hex characters or base64")
+	// Any other long random value (Render's "Generate" button makes one) is
+	// stretched to a 32-byte key with SHA-256.
+	if len(s) >= 32 {
+		sum := sha256.Sum256([]byte(s))
+		return sum[:], nil
+	}
+	return nil, errors.New("MFA_ENCRYPTION_KEY must be at least 32 random characters")
 }

@@ -64,3 +64,18 @@ func TestValidateSignup(t *testing.T) {
 		}
 	}
 }
+
+func TestParseKey(t *testing.T) {
+	if k, err := ParseKey(strings.Repeat("ab", 32)); err != nil || len(k) != 32 {
+		t.Fatalf("hex: %v %d", err, len(k))
+	}
+	if k, err := ParseKey("rNd0m-Render-Generated-Value-Of-Some-Length-1234567890"); err != nil || len(k) != 32 {
+		t.Fatalf("long random string: %v %d", err, len(k))
+	}
+	if _, err := ParseKey("short"); err == nil {
+		t.Fatal("a short key must be refused")
+	}
+	if k, err := ParseKey(""); err != nil || k != nil {
+		t.Fatal("empty means off")
+	}
+}
