@@ -41,6 +41,7 @@ const (
 	kBox
 	kRow
 	kSlot
+	kCategory
 )
 
 // What the website may change on a card. Fields the other app doesn't have
@@ -52,6 +53,8 @@ var editable = map[string]kind{
 	"status": kStatus, "is_rookie": kBool, "is_autograph": kBool, "is_memorabilia": kBool, "is_short_print": kBool,
 	"is_error_variant": kBool, "is_blank_back": kBool, "is_chase": kBool, "is_foil": kBool, "is_sketch_card": kBool,
 	"grading_company": kText, "grading_cert_number": kText, "card_grade": kText, "serial_number": kText,
+	// The Card Editor's Category and markup slider (sale price = estimate + %).
+	"sport": kCategory, "sale_price_percent": kInt,
 	// Box, row and slot aren't here on purpose: cards are filed (and moved)
 	// only in FireCardManager, so a card is never misplaced from a phone.
 }
@@ -140,6 +143,13 @@ func normalize(k string, kd kind, raw json.RawMessage) (json.RawMessage, string)
 		}
 		b, _ := json.Marshal(s)
 		return b, ""
+	case kCategory:
+		var s string
+		if json.Unmarshal(raw, &s) != nil || len(s) > 40 || !rowRE.MatchString(strings.ReplaceAll(s, " ", "")) {
+			return nil, "Pick a category."
+		}
+		b, _ := json.Marshal(strings.TrimSpace(s))
+		return b, ""
 	case kBox:
 		if isNull {
 			return json.RawMessage("null"), ""
@@ -152,6 +162,29 @@ func normalize(k string, kd kind, raw json.RawMessage) (json.RawMessage, string)
 		return b, ""
 	}
 	return nil, "Can't be changed here."
+}
+
+// DeleteCard removes a card from the inventory everywhere (the desktop
+// deletes it on its next sync), like the Card Editor's Delete.
+func (s *Service) DeleteCard(ctx context.Context, accountID, id string) error {
+	c, err := s.Card(ctx, accountID, id)
+	if err != nil {
+		return err
+	}
+	var cur CardData
+	_ = json.Unmarshal(c.Data, &cur)
+	if cur.Status == soldStatus {
+		return ErrSoldAlready
+	}
+	var listing struct {
+		MarketplaceListingID *string `json:"marketplace_listing_id"`
+	}
+	_ = json.Unmarshal(c.Data, &listing)
+	if cur.Status == "EBA" || cur.Status == "EBF" || (listing.MarketplaceListingID != nil && *listing.MarketplaceListingID != "") {
+		return ErrLive
+	}
+	_, err = s.push(ctx, s.device(c, accountID), cloudsync.Change{Entity: "card", ID: c.ID, BaseVersion: c.Version, Deleted: true, EditedAt: time.Now()})
+	return err
 }
 
 // EditResult is what the website shows after saving.

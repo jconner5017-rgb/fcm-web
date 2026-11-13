@@ -232,7 +232,13 @@ func (s *Service) attach(ctx context.Context, d cloudsync.Device, photoID, cardI
 		return 0, err
 	}
 	val, _ := json.Marshal(photoID)
-	v, err := s.Sync.ServerSet(ctx, tx, d.AccountID, "card", cardID, d.ID, map[string]json.RawMessage{side + "_photo_id": val})
+	fields := map[string]json.RawMessage{side + "_photo_id": val}
+	if d.ID == "" && (side == "front" || side == "back") {
+		// A photo replaced on the website goes to Slabs & Singles again on the
+		// next listing update (a PC clears it itself when its photo changes).
+		fields["marketplace_photo_urls"] = json.RawMessage("null")
+	}
+	v, err := s.Sync.ServerSet(ctx, tx, d.AccountID, "card", cardID, d.ID, fields)
 	if err != nil {
 		return 0, err
 	}

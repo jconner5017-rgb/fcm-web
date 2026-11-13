@@ -130,6 +130,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inventory/dashboard", requireAccount(s.handleInvDashboard))
 	mux.HandleFunc("PATCH /v1/inventory/cards/{id}", requireAccount(s.handleInvEdit))
 	mux.HandleFunc("POST /v1/inventory/cards/{id}/sold", requireAccount(s.handleInvMarkSold))
+	mux.HandleFunc("DELETE /v1/inventory/cards/{id}", requireAccount(s.handleInvDelete))
+	mux.HandleFunc("POST /v1/inventory/cards/{id}/rotate", requireAccount(s.handleInvRotate))
 	mux.HandleFunc("GET /v1/inventory/conflicts", requireAccount(s.handleInvConflicts))
 	mux.HandleFunc("POST /v1/inventory/identify", requireAccount(s.handleInvIdentify))
 	mux.HandleFunc("POST /v1/inventory/cards", requireAccount(s.handleInvCreate))
@@ -1033,6 +1035,8 @@ func (s *Server) invEditError(w http.ResponseWriter, r *http.Request, err error)
 		writeError(w, http.StatusNotFound, "not_found", "That card isn't in your online inventory.", nil)
 	case errors.Is(err, inventory.ErrSoldAlready):
 		writeError(w, http.StatusConflict, "sold", "This card is already sold.", nil)
+	case errors.Is(err, inventory.ErrLive):
+		writeError(w, http.StatusConflict, "live", "This card is listed. End its listing first (Live Listings), then delete it.", nil)
 	default:
 		s.internalError(w, r, err)
 	}
@@ -1066,6 +1070,49 @@ func (s *Server) handleInvEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleInvRotate turns the card's front or back photo a quarter turn.
+func (s *Server) handleInvRotate(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Side      string `json:"side"`
+		Clockwise bool   `json:"clockwise"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	c, err := s.inv.Card(r.Context(), sess.Account.ID, r.PathValue("id"))
+	if err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	err = s.photos.Rotate(r.Context(), cloudsync.Device{AccountID: sess.Account.ID, Edition: c.Edition}, c.ID, in.Side, in.Clockwise)
+	if err != nil {
+		s.photoError(w, r, err)
+		return
+	}
+	out, err := s.inv.Card(r.Context(), sess.Account.ID, c.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleInvDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.invWriteAllowed(w, r) {
+		return
+	}
+	sess, _ := currentSession(r)
+	if err := s.inv.DeleteCard(r.Context(), sess.Account.ID, r.PathValue("id")); err != nil {
+		s.invEditError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleInvMarkSold(w http.ResponseWriter, r *http.Request) {

@@ -152,6 +152,7 @@ export default function CardActions({ card }: { card: CardDetail }) {
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn" onClick={() => open("edit")}>Edit card</button>
           <button type="button" className="btn-ghost" onClick={() => open("sold")}>Mark sold</button>
+          <a href={`/editor?id=${card.id}&edition=${card.edition}`} className="btn-ghost hidden lg:inline-flex">Open in Card Editor</a>
         </div>
       )}
 

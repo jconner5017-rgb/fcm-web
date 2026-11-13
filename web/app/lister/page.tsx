@@ -9,7 +9,9 @@ import type { Run } from "@/components/lister/RunProgress";
 export const metadata = { title: "Bulk Lister" };
 
 export default async function ListerPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const edition = one((await searchParams).edition);
+  const sp = await searchParams;
+  const edition = one(sp.edition);
+  const ids = (one(sp.ids) ?? "").split(",").filter(Boolean).slice(0, 500);
   const { me } = await getMe();
   if (!me) redirect("/signin?next=/lister");
   const [sum, tree, keys, runs] = await Promise.all([
@@ -42,7 +44,7 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
         <p className="card mt-5">Listing from the website needs the FireCardManager Web add-on (your free trial has ended).</p>
       ) : (
         <div className="mt-5">
-          <BulkLister key={ed} edition={ed} sports={tree.data?.sports ?? []} hasKey={hasKey} />
+          <BulkLister key={ed} edition={ed} sports={tree.data?.sports ?? []} hasKey={hasKey} initialIds={ids} />
         </div>
       )}
       {(runs.data?.jobs.length ?? 0) > 0 && (

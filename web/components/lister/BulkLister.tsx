@@ -19,14 +19,15 @@ function problems(c: CardRow, auction: boolean): string[] {
   return p;
 }
 
-export default function BulkLister({ edition, sports, hasKey }: { edition: string; sports: TreeSport[]; hasKey: boolean }) {
+export default function BulkLister({ edition, sports, hasKey, initialIds = [] }: { edition: string; sports: TreeSport[]; hasKey: boolean; initialIds?: string[] }) {
   const router = useRouter();
-  const [filter, setFilter] = useState<Filter>({ sport: "", box: "", status: "Ready", q: "" });
+  // Cards sent from the Card Editor arrive picked, with any status shown.
+  const [filter, setFilter] = useState<Filter>({ sport: "", box: "", status: initialIds.length ? "" : "Ready", q: "" });
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<CardPage | null>(null);
   const [loading, setLoading] = useState(true);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [picked, setPicked] = useState<Set<string>>(new Set(initialIds));
   const [allMatching, setAllMatching] = useState(false);
   const [auction, setAuction] = useState(false);
   const [duration, setDuration] = useState(7);

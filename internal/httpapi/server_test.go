@@ -18,6 +18,8 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"fmt"
+	imagepkg "image"
+	jpegpkg "image/jpeg"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1360,5 +1362,79 @@ func TestImportCards(t *testing.T) {
 		"fields": map[string]any{"sport": "Baseball"}})
 	if other["box_name"] != "Baseball" {
 		t.Fatalf("unknown box: %v", other)
+	}
+}
+
+func TestCardEditorExtras(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("editor@example.com")
+	pc := e.link(owner, "sports", "HWID-ED", "")
+	now := time.Now()
+	push(t, pc,
+		ch("card", uuid(961), 0, now, map[string]any{"sport": "Baseball", "player_name": "Keep", "status": "Ready", "sale_price": 5}),
+		ch("card", uuid(962), 0, now, map[string]any{"sport": "Baseball", "player_name": "Live", "status": "EBF"}),
+		ch("card", uuid(963), 0, now, map[string]any{"sport": "Baseball", "player_name": "On S&S", "status": "Ready", "marketplace_listing_id": "L1"}))
+
+	// Category and the markup slider can be changed.
+	out := owner.must(200, "PATCH", "/v1/inventory/cards/"+uuid(961), map[string]any{"fields": map[string]any{"sport": "Football", "sale_price_percent": 40}})
+	d := out["card"].(map[string]any)["data"].(map[string]any)
+	if d["sport"] != "Football" || d["sale_price_percent"].(float64) != 40 {
+		t.Fatalf("edit: %v", d)
+	}
+	owner.must(422, "PATCH", "/v1/inventory/cards/"+uuid(961), map[string]any{"fields": map[string]any{"sport": "<b>"}})
+
+	// Delete: listed cards first need their listing ended.
+	owner.must(409, "DELETE", "/v1/inventory/cards/"+uuid(962), nil)
+	owner.must(409, "DELETE", "/v1/inventory/cards/"+uuid(963), nil)
+	owner.must(204, "DELETE", "/v1/inventory/cards/"+uuid(961), nil)
+	owner.must(404, "GET", "/v1/inventory/cards/"+uuid(961), nil)
+	// The PC hears about it.
+	pull := pc.must(200, "GET", "/v1/sync/pull", nil)
+	found := false
+	for _, c := range pull["changes"].([]any) {
+		m := c.(map[string]any)
+		if m["id"] == uuid(961) && m["deleted"] == true {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("delete not pulled: %v", pull)
+	}
+}
+
+func TestRotatePhoto(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("rotate@example.com")
+	c := owner.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "sports", "import": true, "fields": map[string]any{"sport": "Baseball"}})
+	cardID := c["id"].(string)
+	// A 30x20 JPEG (wide), uploaded as the front.
+	img := imagepkg.NewRGBA(imagepkg.Rect(0, 0, 30, 20))
+	var buf bytes.Buffer
+	jpegpkg.Encode(&buf, img, nil)
+	pic := buf.Bytes()
+	out := owner.must(200, "POST", "/v1/inventory/cards/"+cardID+"/photo-urls", map[string]any{"photos": []map[string]any{{"side": "front", "bytes": len(pic)}}})
+	slot := out["uploads"].([]any)[0].(map[string]any)
+	req, _ := http.NewRequest("PUT", slot["upload_url"].(string), bytes.NewReader(pic))
+	http.DefaultClient.Do(req)
+	owner.must(200, "POST", "/v1/inventory/photos/confirm", map[string]any{"photo_ids": []string{slot["photo_id"].(string)}})
+
+	owner.must(404, "POST", "/v1/inventory/cards/"+cardID+"/rotate", map[string]any{"side": "back", "clockwise": true})
+	r := owner.must(200, "POST", "/v1/inventory/cards/"+cardID+"/rotate", map[string]any{"side": "front", "clockwise": true})
+	d := r["data"].(map[string]any)
+	newID, _ := d["front_photo_id"].(string)
+	if newID == "" || newID == slot["photo_id"] || d["front_thumb_photo_id"] == nil {
+		t.Fatalf("rotated: %v", d)
+	}
+	var key string
+	e.db.QueryRow(`SELECT object_key FROM sync_photos WHERE id = $1`, newID).Scan(&key)
+	got, _, err := imagepkg.Decode(bytes.NewReader(e.bucket.objects["/fcm-photos/"+key]))
+	if err != nil {
+		for k := range e.bucket.objects {
+			t.Log(k)
+		}
+		t.Fatalf("decode %s: %v", key, err)
+	}
+	if b := got.Bounds(); b.Dx() != 20 || b.Dy() != 30 {
+		t.Fatalf("size after turning: %v", b)
 	}
 }

@@ -122,3 +122,44 @@ export function toFields(form: CardForm, flags: Flags, extra: Extra, tcg: boolea
   if (extra.last_priced_at) fields.last_priced_at = extra.last_priced_at;
   return { fields, bad };
 }
+
+/** Replaces one side's photo (full size + thumbnail) on a saved card. */
+export async function uploadSide(cardId: string, side: "front" | "back", shot: Shot): Promise<string> {
+  const blobs: Record<string, Blob> = { [side]: shot.full, [side + "_thumb"]: shot.thumb };
+  const u = await send<{ uploads: { side: string; upload_url?: string; photo_id?: string; error?: string }[] }>(
+    "POST", `/v1/inventory/cards/${cardId}/photo-urls`, { photos: Object.entries(blobs).map(([s, b]) => ({ side: s, bytes: b.size })) },
+  );
+  if (!u.ok) return u.message;
+  const ids: string[] = [];
+  await Promise.all(u.data.uploads.map(async (s) => {
+    if (!s.upload_url || !s.photo_id) return;
+    try {
+      const res = await fetch(s.upload_url, { method: "PUT", body: blobs[s.side], headers: { "content-type": "image/jpeg" } });
+      if (res.ok) ids.push(s.photo_id);
+    } catch {}
+  }));
+  if (ids.length) await send("POST", "/v1/inventory/photos/confirm", { photo_ids: ids });
+  return ids.length < 2 ? "The photo didn't upload. Try again." : "";
+}
+
+/** Turns a photo a quarter turn (clockwise when `cw`). */
+export async function rotate(blob: Blob, cw: boolean): Promise<Blob> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.naturalHeight;
+    c.height = img.naturalWidth;
+    const g = c.getContext("2d")!;
+    g.translate(c.width / 2, c.height / 2);
+    g.rotate((cw ? 90 : -90) * Math.PI / 180);
+    g.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    return await new Promise<Blob>((ok, fail) => c.toBlob((b) => (b ? ok(b) : fail(new Error("Couldn't turn the photo."))), "image/jpeg", 0.92));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+export const CONDITIONS = ["Raw - NM", "Raw - Excellent", "Raw - Very Good", "Raw - Poor", "Graded"];
