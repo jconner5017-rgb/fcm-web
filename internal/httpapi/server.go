@@ -1062,6 +1062,7 @@ func (s *Server) handleInvCards(w http.ResponseWriter, r *http.Request) {
 	out, err := s.inv.Cards(r.Context(), sess.Account.ID, inventory.Query{
 		Edition: ed, Sport: v.Get("sport"), Box: v.Get("box"), Row: v.Get("row"), Status: v.Get("status"), Search: v.Get("q"),
 		Sort: v.Get("sort"), Desc: v.Get("dir") == "desc", Page: page, PerPage: per, WithBacks: v.Get("backs") == "1", WithFull: v.Get("full") == "1",
+		IDs: idList(v.Get("ids")),
 	})
 	if err != nil {
 		s.internalError(w, r, err)
@@ -2171,4 +2172,16 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		"file_name": name + "_" + s.now().Format("20060102") + ".csv",
 		"csv": res.CSV, "exported": res.Exported, "skipped": len(rows) - res.Exported, "notes": res.Notes,
 	})
+}
+
+// idList reads "id,id,..." (nil when empty), at most 500.
+func idList(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	ids := strings.Split(v, ",")
+	if len(ids) > 500 {
+		ids = ids[:500]
+	}
+	return ids
 }

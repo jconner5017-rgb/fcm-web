@@ -285,7 +285,11 @@ export default function CardEditor({ edition, sports, start }: { edition: string
               <button type="button" className="btn-ghost !py-1.5" disabled={!bulkCat || !!busy} onClick={applyCategory}>Apply</button>
             </>
           )}
-          {card && <Link href={`/lister?ids=${card.id}`} className="btn-ghost !py-1.5">Send to Bulk Lister</Link>}
+          {card && (
+            <Link href={`/lister?edition=${edition}&ids=${(checked.size ? [...checked] : [card.id]).join(",")}`} className="btn-ghost !py-1.5">
+              Send {checked.size > 1 ? `${checked.size} cards` : ""} to Bulk Lister
+            </Link>
+          )}
           {card && <button type="button" className="btn-ghost !py-1.5 text-bad" disabled={!!busy} onClick={remove}>Delete</button>}
         </div>
       </div>

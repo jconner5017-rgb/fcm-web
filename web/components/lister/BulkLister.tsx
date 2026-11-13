@@ -39,6 +39,8 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
   const [data, setData] = useState<CardPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [picked, setPicked] = useState<Set<string>>(new Set(initialIds));
+  // Sent from the Card Editor: only those cards show, until "Show all cards".
+  const [sentIds, setSentIds] = useState<string[]>(initialIds);
   const [allMatching, setAllMatching] = useState(false);
   const [auction, setAuction] = useState(false);
   const [duration, setDuration] = useState(7);
@@ -54,11 +56,12 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
     setLoading(true);
     const p = new URLSearchParams({ edition, sort: "slot", per: "60", page: String(page) });
     for (const [k, v] of Object.entries(filter) as [string, string][]) if (v) p.set(k, v);
+    if (sentIds.length) p.set("ids", sentIds.join(","));
     const r = await send<CardPage>("GET", "/v1/inventory/cards?" + p.toString());
     setLoading(false);
     if (r.ok) setData(r.data);
     else setError(r.message);
-  }, [edition, filter, page]);
+  }, [edition, filter, page, sentIds]);
   useEffect(() => { load(); }, [load]);
 
   const sport = sports.find((s) => s.sport === filter.sport);
@@ -113,6 +116,14 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
       <section className="min-w-0 space-y-3">
+        {sentIds.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-fire px-3 py-2 text-[13px]">
+            <span className="font-semibold">{sentIds.length} card{sentIds.length === 1 ? "" : "s"} sent from the Card Editor</span>
+            <button type="button" className="font-semibold text-link" onClick={() => { setSentIds([]); setPicked(new Set()); setAllMatching(false); setPage(1); setFilter({ ...filter, status: "Ready" }); }}>
+              Show all cards
+            </button>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
           <select className="field !mt-0 !w-auto" value={filter.status} onChange={(e) => change({ status: e.target.value })} aria-label="Status">
             <option value="Ready">Ready to list</option>
@@ -165,8 +176,8 @@ export default function BulkLister({ edition, sports, hasKey, ebay, initialIds =
                   <input type="checkbox" checked={on} onChange={() => toggle(c.id)} disabled={allMatching} />
                   {src ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={src} alt="" loading="lazy" className="h-14 w-10 shrink-0 rounded object-contain" />
-                  ) : <div className="h-14 w-10 shrink-0 rounded bg-wash" />}
+                    <img src={src} alt="" loading="lazy" className="h-20 w-[57px] shrink-0 rounded object-contain lg:h-28 lg:w-20" />
+                  ) : <div className="h-20 w-[57px] shrink-0 rounded bg-wash lg:h-28 lg:w-20" />}
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-semibold">{c.data.player_name}</p>
                     <p className="truncate text-[12px] text-muted">{setLine(c.data)}</p>
