@@ -20,7 +20,9 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
+	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
+	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 )
 
 func main() {
@@ -103,9 +105,13 @@ func run(log *slog.Logger) error {
 		log.Warn("R2_ENDPOINT not set: photo upload is off (cards still sync)")
 	}
 
+	listerSvc := &lister.Service{DB: database, Sync: syncSvc, Sealer: &auth.MFA{DB: database, Key: mfaKey}, Photos: photoSvc,
+		Slabs: &slabs.Client{BaseURL: env("SLABS_API_URL", slabs.DefaultBaseURL)}, Log: log, Pause: 300 * time.Millisecond}
+	go listerSvc.Run(ctx)
+
 	srv := httpapi.New(httpapi.Options{
 		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
-		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc,
+		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc, Lister: listerSvc,
 		Log: log, CookieSecure: appEnv != "dev", SessionTTL: authSvc.SessionTTL,
 		TrustProxy: env("TRUST_PROXY_HEADERS", "false") == "true", WebURL: webURL,
 	})

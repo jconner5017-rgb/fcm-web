@@ -281,6 +281,7 @@ type Query struct {
 	Page      int // from 1
 	PerPage   int
 	WithBacks bool // also sign back thumbnails
+	WithFull  bool // also sign the full-size front and back
 }
 
 type CardRow struct {
@@ -291,6 +292,8 @@ type CardRow struct {
 	Data      json.RawMessage `json:"data"`
 	ThumbURL  string          `json:"thumb_url,omitempty"`
 	BackURL   string          `json:"back_thumb_url,omitempty"`
+	FrontFull string          `json:"front_url,omitempty"` // full-size photos, for big screens
+	BackFull  string          `json:"back_url,omitempty"`
 }
 
 type CardPage struct {
@@ -415,6 +418,8 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	// tile, and the back one too (the Boxes page shows both).
 	front := make([]string, len(out.Cards))
 	back := make([]string, len(out.Cards))
+	frontFull := make([]string, len(out.Cards))
+	backFull := make([]string, len(out.Cards))
 	var ids []string
 	pick := func(p map[string]string, thumb, full string) string {
 		if id := p[thumb]; id != "" {
@@ -428,7 +433,10 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 		if q.WithBacks {
 			back[i] = pick(p, "back_thumb_photo_id", "back_photo_id")
 		}
-		for _, id := range []string{front[i], back[i]} {
+		if q.WithFull {
+			frontFull[i], backFull[i] = p["front_photo_id"], p["back_photo_id"]
+		}
+		for _, id := range []string{front[i], back[i], frontFull[i], backFull[i]} {
 			if id != "" {
 				ids = append(ids, id)
 			}
@@ -437,6 +445,7 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	urls := s.sign(ctx, accountID, ids)
 	for i := range out.Cards {
 		out.Cards[i].ThumbURL, out.Cards[i].BackURL = urls[front[i]], urls[back[i]]
+		out.Cards[i].FrontFull, out.Cards[i].BackFull = urls[frontFull[i]], urls[backFull[i]]
 	}
 	if len(out.Cards) == 0 && q.Page > 1 {
 		// Past the end: report the total so the page can offer page 1.

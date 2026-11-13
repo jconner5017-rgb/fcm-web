@@ -19,7 +19,7 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
   const [sumRes, treeRes, pageRes] = await Promise.all([
     apiGet<InvSummary>(href("/v1/inventory/summary", { edition: cur.edition })),
     apiGet<{ edition: string; sports: TreeSport[] }>(href("/v1/inventory/tree", { edition: cur.edition })),
-    apiGet<CardPage>(href("/v1/inventory/cards", { ...cur, sort: "slot", per: String(PER_PAGE), backs: "1" })),
+    apiGet<CardPage>(href("/v1/inventory/cards", { ...cur, sort: "slot", per: String(PER_PAGE), backs: "1", full: "1" })),
   ]);
   const sum = sumRes.data, tree = treeRes.data, page = pageRes.data;
   if (!sum || !tree || !page) return <p className="card mt-8">Your boxes couldn&apos;t be loaded just now. Refresh the page in a minute.</p>;
@@ -35,7 +35,8 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
   const total = tree.sports.reduce((n, s) => n + s.cards, 0);
 
   return (
-    <div className="mt-6">
+    // Wider than the other pages on a big screen, so the photos can be large.
+    <div className="relative left-1/2 mt-6 w-screen max-w-[1680px] -translate-x-1/2 px-4 lg:px-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h1 className="text-[26px] font-bold">Boxes</h1>
         <div className="flex flex-wrap items-center gap-2">
@@ -83,7 +84,7 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
           {page.cards.length === 0 ? (
             <p className="card text-muted">No cards here.</p>
           ) : (
-            <ul className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            <ul className="grid auto-rows-fr grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4">
               {page.cards.map((c) => <li key={c.id}><BoxTile c={c} from={self} /></li>)}
             </ul>
           )}

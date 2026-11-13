@@ -16,19 +16,23 @@ export default function BoxTile({ c, from }: { c: CardRow; from: string }) {
   const yearSet = [seasonText(d), d.brand && d.set_name?.toLowerCase().includes(d.brand.toLowerCase()) ? "" : d.brand, d.set_name,
     d.card_number ? `#${d.card_number}` : ""].filter(Boolean).join(" ") + (d.variety ? ` · ${d.variety}` : "");
   const tags = flags(d);
-  const img = (src: string | null, side: string) =>
+  // Phones get the small thumbnail; a computer screen (1024 px and wider) the full-size photo.
+  const img = (src: string | null, side: string, full?: string) =>
     src ? (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img src={src} alt={`${side} of ${d.player_name ?? "card"}`} loading="lazy" decoding="async" className="h-full w-full rounded-md object-contain" />
+      <picture className="block h-full w-full">
+        {full && <source media="(min-width: 1024px)" srcSet={full} />}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt={`${side} of ${d.player_name ?? "card"}`} loading="lazy" decoding="async" className="h-full w-full rounded-md object-contain" />
+      </picture>
     ) : (
       <div className="flex h-full w-full items-center justify-center rounded-md text-[11px] text-muted">No {side.toLowerCase()}</div>
     );
 
   return (
     <Link href={`/inventory/cards/${c.id}?from=${encodeURIComponent(from)}`} className="card group flex h-full flex-col !p-3 hover:border-fire">
-      <div className="grid h-52 grid-cols-2 gap-2 rounded-lg bg-paper p-1.5">
-        {img(front, "Front")}
-        {img(back, "Back")}
+      <div className="grid h-60 grid-cols-2 gap-2 rounded-lg bg-paper p-1.5 lg:h-80">
+        {img(front, "Front", c.front_url)}
+        {img(back, "Back", c.back_url)}
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">

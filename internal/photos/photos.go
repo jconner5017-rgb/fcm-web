@@ -374,3 +374,29 @@ func (s *Service) BrowserURLs(ctx context.Context, accountID string, ids []strin
 	}
 	return out, rows.Err()
 }
+
+// Read returns a ready photo's bytes (for the server to pass on, e.g. to a
+// marketplace the seller lists on from the website).
+func (s *Service) Read(ctx context.Context, accountID, photoID string) ([]byte, error) {
+	if !s.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	var key string
+	err := s.DB.QueryRowContext(ctx, `SELECT object_key FROM sync_photos WHERE id::text = $1 AND account_id = $2 AND status = 'ready'`,
+		strings.ToLower(photoID), accountID).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	body, _, found, err := s.Store.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrNotFound
+	}
+	defer body.Close()
+	return io.ReadAll(io.LimitReader(body, MaxPhotoBytes+1))
+}

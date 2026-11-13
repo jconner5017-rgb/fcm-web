@@ -20,7 +20,9 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
+	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
+	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 )
 
 const sessionCookie = "fcm_session"
@@ -34,6 +36,7 @@ type Options struct {
 	Sync         *cloudsync.Service
 	Photos       *photos.Service
 	AI           *identify.Client // nil: the real AI services
+	Lister       *lister.Service  // the Bulk Lister (nil: off)
 	Log          *slog.Logger
 	CookieSecure bool
 	SessionTTL   time.Duration
@@ -51,6 +54,7 @@ type Server struct {
 	sync         *cloudsync.Service
 	photos       *photos.Service
 	inv          *inventory.Service
+	lister       *lister.Service
 	log          *slog.Logger
 	cookieSecure bool
 	sessionTTL   time.Duration
@@ -69,7 +73,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -134,6 +138,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/me/ai-key", requireAccount(s.handleAIKeyPut))
 	mux.HandleFunc("DELETE /v1/me/ai-key", requireAccount(s.handleAIKeyDelete))
 	mux.HandleFunc("POST /v1/devices/ai-key", s.requireDevice(s.handleDeviceAIKey))
+	// Bulk Lister (marketplaces only; exports stay in FireCardManager).
+	mux.HandleFunc("GET /v1/me/market-keys", requireAccount(s.handleMarketKeys))
+	mux.HandleFunc("PUT /v1/me/market-keys/{market}", requireAccount(s.handleMarketKeyPut))
+	mux.HandleFunc("DELETE /v1/me/market-keys/{market}", requireAccount(s.handleMarketKeyDelete))
+	mux.HandleFunc("POST /v1/devices/market-key", s.requireDevice(s.handleDeviceMarketKey))
+	mux.HandleFunc("POST /v1/lister/jobs", requireAccount(s.handleListerStart))
+	mux.HandleFunc("GET /v1/lister/jobs", requireAccount(s.handleListerRecent))
+	mux.HandleFunc("GET /v1/lister/jobs/{id}", requireAccount(s.handleListerGet))
+	mux.HandleFunc("POST /v1/lister/jobs/{id}/stop", requireAccount(s.handleListerStop))
 	mux.HandleFunc("POST /v1/inventory/conflicts/{id}", requireAccount(s.handleInvResolve))
 
 	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
@@ -955,7 +968,7 @@ func (s *Server) handleInvCards(w http.ResponseWriter, r *http.Request) {
 	per, _ := strconv.Atoi(v.Get("per"))
 	out, err := s.inv.Cards(r.Context(), sess.Account.ID, inventory.Query{
 		Edition: ed, Sport: v.Get("sport"), Box: v.Get("box"), Row: v.Get("row"), Status: v.Get("status"), Search: v.Get("q"),
-		Sort: v.Get("sort"), Desc: v.Get("dir") == "desc", Page: page, PerPage: per, WithBacks: v.Get("backs") == "1",
+		Sort: v.Get("sort"), Desc: v.Get("dir") == "desc", Page: page, PerPage: per, WithBacks: v.Get("backs") == "1", WithFull: v.Get("full") == "1",
 	})
 	if err != nil {
 		s.internalError(w, r, err)
@@ -1330,4 +1343,196 @@ func (s *Server) handleInvDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// ---------------- Bulk Lister ----------------
+
+func (s *Server) listerOn(w http.ResponseWriter) bool {
+	if s.lister == nil {
+		writeError(w, http.StatusServiceUnavailable, "lister_off", "The Bulk Lister isn't available right now.", nil)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleMarketKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	sess, _ := currentSession(r)
+	keys, err := s.lister.Keys(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (s *Server) handleMarketKeyPut(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	var in struct {
+		Key string `json:"key"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	err := s.lister.SaveKey(r.Context(), sess.Account.ID, r.PathValue("market"), in.Key, nil, "web", "")
+	if lister.IsBadKey(err) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", err.Error(), map[string]string{"key": err.Error()})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", err.Error(), nil)
+		return
+	}
+	s.handleMarketKeys(w, r)
+}
+
+func (s *Server) handleMarketKeyDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	sess, _ := currentSession(r)
+	if err := s.lister.DeleteKey(r.Context(), sess.Account.ID, r.PathValue("market"), "web"); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeviceMarketKey: a linked PC sends its Slabs & Singles key and
+// package defaults (an empty key: removed there).
+func (s *Server) handleDeviceMarketKey(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	d, _, ok := s.syncDevice(w, r, false)
+	if !ok {
+		return
+	}
+	var in struct {
+		Market   string          `json:"market"`
+		Key      string          `json:"key"`
+		Settings json.RawMessage `json:"settings"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	var err error
+	if strings.TrimSpace(in.Key) == "" {
+		err = s.lister.DeleteKey(r.Context(), d.AccountID, in.Market, "pc")
+	} else {
+		err = s.lister.SaveKey(r.Context(), d.AccountID, in.Market, in.Key, in.Settings, "pc", d.ID)
+	}
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", err.Error(), nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListerStart(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) || !s.invWriteAllowed(w, r) {
+		return
+	}
+	var in struct {
+		Edition string   `json:"edition"`
+		Market  string   `json:"market"`
+		CardIDs []string `json:"card_ids"`
+		Filter  *struct {
+			Sport  string `json:"sport"`
+			Box    string `json:"box"`
+			Row    string `json:"row"`
+			Status string `json:"status"`
+			Q      string `json:"q"`
+		} `json:"filter"` // "select all matching" instead of card ids
+		Options slabs.Options `json:"options"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	ed, err := s.invEdition(r, sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if in.Edition == "sports" || in.Edition == "tcg" {
+		ed = in.Edition
+	}
+	ids := in.CardIDs
+	if in.Filter != nil {
+		ids = nil
+		for page := 1; len(ids) < lister.MaxPerJob; page++ {
+			p, err := s.inv.Cards(r.Context(), sess.Account.ID, inventory.Query{Edition: ed, Sport: in.Filter.Sport, Box: in.Filter.Box,
+				Row: in.Filter.Row, Status: in.Filter.Status, Search: in.Filter.Q, Sort: "slot", Page: page, PerPage: inventory.MaxPerPage})
+			if err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			for _, c := range p.Cards {
+				ids = append(ids, c.ID)
+			}
+			if len(p.Cards) < inventory.MaxPerPage {
+				break
+			}
+		}
+	}
+	job, err := s.lister.Start(r.Context(), sess.Account.ID, ed, in.Market, inventory.NewID(), ids, in.Options)
+	switch {
+	case errors.Is(err, lister.ErrNoKey):
+		writeError(w, http.StatusConflict, "no_market_key",
+			"Add your Slabs & Singles API key on the Account page (or link a PC that has one in FireCardManager).", nil)
+	case errors.Is(err, lister.ErrNoCards):
+		writeError(w, http.StatusUnprocessableEntity, "no_cards", "Pick at least one card that's still in your inventory.", nil)
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		writeJSON(w, http.StatusCreated, job)
+	}
+}
+
+func (s *Server) handleListerRecent(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	sess, _ := currentSession(r)
+	jobs, err := s.lister.Recent(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+func (s *Server) handleListerGet(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	sess, _ := currentSession(r)
+	job, err := s.lister.Get(r.Context(), sess.Account.ID, r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "That listing run wasn't found.", nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) handleListerStop(w http.ResponseWriter, r *http.Request) {
+	if !s.listerOn(w) {
+		return
+	}
+	sess, _ := currentSession(r)
+	if err := s.lister.Stop(r.Context(), sess.Account.ID, r.PathValue("id")); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.handleListerGet(w, r)
 }

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
 import AIKeyForm, { type AIKey } from "@/components/AIKeyForm";
+import MarketKeyForm, { type MarketKey } from "@/components/MarketKeyForm";
 import { addonActive, shortDate } from "@/lib/client";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
@@ -11,7 +12,9 @@ export default async function AccountPage() {
   const { me } = await getMe();
   if (!me) redirect("/signin?next=/account");
   const a = me.account;
-  const aiKey = (await apiGet<{ ai_key: AIKey | null }>("/v1/me/ai-key")).data?.ai_key ?? null;
+  const [aiRes, mkRes] = await Promise.all([apiGet<{ ai_key: AIKey | null }>("/v1/me/ai-key"), apiGet<{ keys: MarketKey[] }>("/v1/me/market-keys")]);
+  const aiKey = aiRes.data?.ai_key ?? null;
+  const slabsKey = mkRes.data?.keys.find((k) => k.market === "slabs") ?? null;
   return (
     <div className="mt-8 max-w-[640px] space-y-6">
       <h1 className="text-[26px] font-bold">Account</h1>
@@ -27,6 +30,10 @@ export default async function AccountPage() {
       <section className="card" id="ai-key">
         <h2 className="text-[18px] font-bold">AI key for phone identification</h2>
         <AIKeyForm initial={aiKey} />
+      </section>
+      <section className="card" id="market-keys">
+        <h2 className="text-[18px] font-bold">Slabs &amp; Singles key for the Bulk Lister</h2>
+        <MarketKeyForm initial={slabsKey} />
       </section>
       <section className="card">
         <h2 className="text-[18px] font-bold">Two-factor sign-in</h2>

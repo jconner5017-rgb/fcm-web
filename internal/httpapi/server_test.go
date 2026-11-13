@@ -38,7 +38,9 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/license"
+	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
+	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 )
 
 type env struct {
@@ -48,6 +50,31 @@ type env struct {
 	now    time.Time
 	bucket *fakeBucket
 	ai     *fakeAI
+	slabs  *fakeSlabs
+	lister *lister.Service
+}
+
+// fakeSlabs stands in for the Slabs & Singles seller API.
+type fakeSlabs struct {
+	photos   int
+	listings []map[string]any
+	auth     string
+}
+
+func (f *fakeSlabs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.auth = r.Header.Get("Authorization")
+	switch r.URL.Path {
+	case "/v1/photos":
+		f.photos++
+		fmt.Fprintf(w, `{"photo":{"id":"p%d","url":"https://img.example/p%d.jpg","width":10,"height":10}}`, f.photos, f.photos)
+	case "/v1/listings":
+		var in map[string]any
+		json.NewDecoder(r.Body).Decode(&in)
+		f.listings = append(f.listings, in)
+		fmt.Fprintf(w, `{"listing":{"id":"lst-%d","external_id":%q,"status":"active"},"created":true}`, len(f.listings), in["external_id"])
+	default:
+		w.WriteHeader(404)
+	}
 }
 
 // fakeAI stands in for Claude and Gemini.
@@ -134,6 +161,9 @@ func setup(t *testing.T) *env {
 	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
 	aiSrv := httptest.NewServer(e.ai)
 	t.Cleanup(aiSrv.Close)
+	e.slabs = &fakeSlabs{}
+	slabsSrv := httptest.NewServer(e.slabs)
+	t.Cleanup(slabsSrv.Close)
 	bucketSrv := httptest.NewServer(e.bucket)
 	t.Cleanup(bucketSrv.Close)
 	syncSvc := &cloudsync.Service{DB: d}
@@ -142,10 +172,11 @@ func setup(t *testing.T) *env {
 	authSvc := &auth.Service{DB: d, SessionTTL: time.Hour, AdminEmails: []string{"owner@example.com"}}
 	key := make([]byte, 32)
 	rand.Read(key)
+	e.lister = &lister.Service{DB: d, Sync: syncSvc, Sealer: &auth.MFA{DB: d, Key: key}, Photos: photoSvc, Slabs: &slabs.Client{BaseURL: slabsSrv.URL}}
 	s := New(Options{
 		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key},
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
-		AI:  &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"},
+		AI: &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"}, Lister: e.lister,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), SessionTTL: time.Hour, WebURL: "https://app.test",
 	})
 	e.srv = httptest.NewServer(s.Handler())
@@ -1142,5 +1173,85 @@ func TestFilingFullBoxRollsOver(t *testing.T) {
 		"sport": "Hockey", "player_name": "Overflow", "brand": "UD", "set_name": "Series 1", "card_number": "201", "condition": "Raw - NM", "year": 2024}})
 	if c["box_name"] != "Hockey (cont. 2)" || c["data"].(map[string]any)["slot_row"] != "A" {
 		t.Fatalf("rollover: %v", c)
+	}
+}
+
+func TestBulkListerSlabs(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("lister@example.com")
+	pc := e.link(owner, "sports", "HWID-L1", "")
+	now := time.Now()
+	good, noPrice := uuid(641), uuid(642)
+	push(t, pc,
+		ch("card", good, 0, now, map[string]any{"sku": "FCM-508", "sport": "Baseball", "player_name": "Triston Casas", "team": "Boston Red Sox",
+			"year": 2021, "brand": "Leaf Trading Cards", "set_name": "Pro Set Autographs", "card_number": "PA-TC1", "variety": "Blue",
+			"serial_number": "26/35", "condition": "Raw - NM", "sale_price": 18, "status": "Ready", "is_autograph": true}),
+		ch("card", noPrice, 0, now, map[string]any{"sku": "FCM-509", "sport": "Baseball", "player_name": "No Price", "brand": "Topps",
+			"set_name": "Chrome", "card_number": "1", "condition": "Raw - NM", "year": 2024, "status": "Ready"}))
+	_, seq := pull(t, pc, 0)
+	jpeg := bytes.Repeat([]byte{0xFF, 0xD8}, 300)
+	up := pc.must(200, "POST", "/v1/photos/upload-urls", map[string]any{"photos": []map[string]any{{"card_id": good, "side": "front", "bytes": len(jpeg)}}})
+	slot := up["uploads"].([]any)[0].(map[string]any)
+	req, _ := http.NewRequest("PUT", slot["upload_url"].(string), bytes.NewReader(jpeg))
+	http.DefaultClient.Do(req)
+	pc.must(200, "POST", "/v1/photos/confirm", map[string]any{"photo_ids": []string{slot["photo_id"].(string)}})
+
+	if code, res := owner.do("POST", "/v1/lister/jobs", map[string]any{"market": "slabs", "card_ids": []string{good}}); code != 409 || errCode(res) != "no_market_key" {
+		t.Fatalf("no key: %d %v", code, res)
+	}
+	pc.must(204, "POST", "/v1/devices/market-key", map[string]any{"market": "slabs", "key": "ss_live_0123456789abcdefWXYZ",
+		"settings": map[string]any{"package_mode": "auto", "raw_weight_oz": 1.5, "graded_weight_oz": 3}})
+	k := owner.must(200, "GET", "/v1/me/market-keys", nil)["keys"].([]any)[0].(map[string]any)
+	if k["last4"] != "WXYZ" || k["source"] != "pc" {
+		t.Fatalf("key: %v", k)
+	}
+
+	job := owner.must(201, "POST", "/v1/lister/jobs", map[string]any{"market": "slabs", "card_ids": []string{good, noPrice, uuid(999)},
+		"options": map[string]any{"allow_offers": true, "accept_percent": 90, "decline_percent": 60}})
+	if len(job["items"].([]any)) != 2 {
+		t.Fatalf("job: %v", job)
+	}
+	run := func() {
+		for {
+			did, err := e.lister.RunOnce(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !did {
+				return
+			}
+		}
+	}
+	run()
+	job = owner.must(200, "GET", "/v1/lister/jobs/"+job["id"].(string), nil)
+	items := job["items"].([]any)
+	if job["status"] != "done" || items[0].(map[string]any)["status"] != "listed" || items[1].(map[string]any)["status"] != "skipped" ||
+		!strings.Contains(items[1].(map[string]any)["message"].(string), "Sale Price") {
+		t.Fatalf("results: %v", job)
+	}
+	if e.slabs.photos != 1 || len(e.slabs.listings) != 1 || e.slabs.auth != "Bearer ss_live_0123456789abcdefWXYZ" {
+		t.Fatalf("slabs calls: %d photos, %v", e.slabs.photos, e.slabs.listings)
+	}
+	l := e.slabs.listings[0]
+	if l["external_id"] != "FCM-508" || l["price_cents"].(float64) != 1800 || l["game_or_sport"] != "Baseball" || l["condition"] != "NM" ||
+		l["title"] != "2021 Leaf Trading Cards Pro Set Autographs Triston Casas Blue #PA-TC1 26/35 Auto" ||
+		l["package_preset"] != "envelope" || l["weight_oz"].(float64) != 1.5 || l["offers"].(map[string]any)["accept_value"].(float64) != 90 {
+		t.Fatalf("listing: %v", l)
+	}
+	cd := owner.must(200, "GET", "/v1/inventory/cards/"+good, nil)["data"].(map[string]any)
+	if cd["marketplace_listing_id"] != "lst-1" {
+		t.Fatalf("card after listing: %v", cd)
+	}
+	rows, _ := pull(t, pc, seq)
+	if rows[good]["fields"].(map[string]any)["marketplace_listing_id"] != "lst-1" {
+		t.Fatalf("PC pull: %v", rows[good])
+	}
+	j2 := owner.must(201, "POST", "/v1/lister/jobs", map[string]any{"market": "slabs", "filter": map[string]any{"q": "Casas"}})
+	run()
+	if e.slabs.photos != 1 || len(e.slabs.listings) != 2 {
+		t.Fatalf("relist: %d photos, %d listings", e.slabs.photos, len(e.slabs.listings))
+	}
+	if recent := owner.must(200, "GET", "/v1/lister/jobs", nil)["jobs"].([]any); len(recent) != 2 || recent[0].(map[string]any)["id"] != j2["id"] {
+		t.Fatalf("recent: %v", recent)
 	}
 }

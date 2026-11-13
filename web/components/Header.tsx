@@ -22,6 +22,7 @@ export default async function Header() {
               <Link href="/" className="hover:text-fire">Home</Link>
               <Link href="/inventory" className="hover:text-fire">Inventory</Link>
               <Link href="/boxes" className="hover:text-fire">Boxes</Link>
+              <Link href="/lister" className="hover:text-fire">Bulk Lister</Link>
               <Link href="/sold" className="hover:text-fire">Sold</Link>
               <Link href="/devices" className="hover:text-fire">Linked PCs</Link>
               <Link href="/account" className="hover:text-fire">Account</Link>
