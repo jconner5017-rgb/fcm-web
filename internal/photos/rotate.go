@@ -139,4 +139,3 @@ func shrink(src image.Image, max int) image.Image {
 	}
 	return dst
 }
-

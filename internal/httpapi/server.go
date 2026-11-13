@@ -2284,7 +2284,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"file_name": name + "_" + s.now().Format("20060102") + ".csv",
-		"csv": res.CSV, "exported": res.Exported, "skipped": len(rows) - res.Exported, "notes": res.Notes,
+		"csv":       res.CSV, "exported": res.Exported, "skipped": len(rows) - res.Exported, "notes": res.Notes,
 	})
 }
 

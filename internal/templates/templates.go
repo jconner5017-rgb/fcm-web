@@ -83,7 +83,7 @@ func scan(r interface{ Scan(...any) error }) (Template, error) {
 // List is the edition's templates, the default first.
 func (s *Service) List(ctx context.Context, accountID, edition string) ([]Template, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+cols+` FROM listing_templates WHERE account_id = $1 AND edition = $2
-		ORDER BY is_default DESC, source, lower(name)`, accountID, edition)
+		ORDER BY is_default DESC, source DESC, lower(name)`, accountID, edition)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func (s *Service) Get(ctx context.Context, accountID, edition, id string) (*Temp
 	var err error
 	if id == "" {
 		t, err = scan(s.DB.QueryRowContext(ctx, `SELECT `+cols+` FROM listing_templates WHERE account_id = $1 AND edition = $2
-			ORDER BY is_default DESC, source, updated_at DESC LIMIT 1`, accountID, edition))
+			ORDER BY is_default DESC, source DESC, updated_at DESC LIMIT 1`, accountID, edition))
 	} else {
 		t, err = scan(s.DB.QueryRowContext(ctx, `SELECT `+cols+` FROM listing_templates WHERE account_id = $1 AND id::text = $2`, accountID, strings.ToLower(id)))
 	}
@@ -118,8 +118,20 @@ func (s *Service) Get(ctx context.Context, accountID, edition, id string) (*Temp
 	return &t, err
 }
 
-// Save creates (empty id) or changes a website template.
+// Save creates (empty id) or changes a website template. A template saved
+// as the default replaces the edition's other website default, and is used
+// ahead of a PC template (the seller picked it here).
 func (s *Service) Save(ctx context.Context, accountID string, t Template) (Template, error) {
+	out, err := s.save(ctx, accountID, t)
+	if err == nil && t.IsDefault {
+		_, err = s.DB.ExecContext(ctx, `UPDATE listing_templates SET is_default = (id = $3)
+			WHERE account_id = $1 AND edition = $2 AND source = 'web'`, accountID, out.Edition, out.ID)
+		out.IsDefault = true
+	}
+	return out, err
+}
+
+func (s *Service) save(ctx context.Context, accountID string, t Template) (Template, error) {
 	if t.ID == "" {
 		var n int
 		if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM listing_templates WHERE account_id = $1`, accountID).Scan(&n); err != nil {

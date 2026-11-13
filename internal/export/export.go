@@ -191,7 +191,9 @@ func graded(c Card) bool {
 	return g != "" && !strings.EqualFold(g, "raw")
 }
 
-func gradeText(c Card) string { return strings.TrimSpace(str(c.GradingCompany) + " " + str(c.CardGrade)) }
+func gradeText(c Card) string {
+	return strings.TrimSpace(str(c.GradingCompany) + " " + str(c.CardGrade))
+}
 
 // ConditionName turns "Raw - NM" into "Near Mint".
 func ConditionName(cond string) string {

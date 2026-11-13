@@ -9,16 +9,21 @@ const SAMPLE: Record<string, string> = {
   "{StoreName}": "", "{PlayerName}": "Victor Wembanyama", "{Team}": "San Antonio Spurs", "{Year}": "2023-24", "{Brand}": "Panini", "{SetName}": "Prizm",
   "{CardNumber}": "136", "{Variety}": "Silver", "{Condition}": "Raw - NM", "{Sport}": "Basketball", "{EstimatedValue}": "$40.00", "{BoxLabel}": "",
   "{FrontImageUrl}": "/icon.svg", "{BackImageUrl}": "/icon.svg",
+  "{CardKind}": "Sports Cards", "{SportLabel}": "Sport", "{TeamLabel}": "Team",
 };
 const TOKENS = Object.keys(SAMPLE).filter((k) => k !== "{BoxLabel}");
 
-function fill(t: string, store: string): string {
+function fill(t: string, store: string, edition: string): string {
+  const tcg = edition === "tcg";
+  const sample = { ...SAMPLE, ...(tcg ? { "{CardKind}": "Trading Cards", "{SportLabel}": "Category", "{TeamLabel}": "Franchise" } : {}) };
   let out = t;
-  for (const [k, v] of Object.entries(SAMPLE)) out = out.split(k).join(k === "{StoreName}" ? store || "Your Store Name" : v);
+  for (const [k, v] of Object.entries(sample)) out = out.split(k).join(k === "{StoreName}" ? store || "Your Store Name" : v);
   return out;
 }
 
-/** eBay listing templates: the ones from FireCardManager on your PC (read-only here) and your own. */
+/** eBay listing templates: the built-in one, ones from FireCardManager on a PC
+ *  (changed there) and the seller's own. Anything can be edited here: editing
+ *  the built-in or a PC template saves your own version of it. */
 export default function Templates({ edition, initial, defaults, store }: {
   edition: string; initial: Template[]; defaults: { title: string; description: string }; store: string;
 }) {
@@ -37,6 +42,14 @@ export default function Templates({ edition, initial, defaults, store }: {
     setMsg(null);
   }
 
+  // Edit: your own templates in place; the built-in or a PC template becomes
+  // your own version (same name), used as the default like the one it replaces.
+  function edit(t: Template) {
+    if (t.source === "web" && t.id !== "builtin") setDraft({ ...t });
+    else setDraft({ ...t, id: "", source: "web", name: t.name.replace(" (built in)", ""), is_default: t.id === "builtin" || t.is_default || !list.some((x) => x.is_default) });
+    setMsg(null);
+  }
+
   async function save() {
     if (!draft) return;
     setBusy(true);
@@ -45,7 +58,9 @@ export default function Templates({ edition, initial, defaults, store }: {
       : await send<Template>("POST", "/v1/templates", { ...draft, edition });
     setBusy(false);
     if (!r.ok) return setMsg({ text: r.message, bad: true });
-    setList(draft.id ? list.map((t) => (t.id === r.data.id ? r.data : t)) : [...list, r.data]);
+    const saved = r.data;
+    const next = draft.id ? list.map((t) => (t.id === saved.id ? saved : t)) : [...list, saved];
+    setList(saved.is_default ? next.map((t) => (t.id === saved.id ? t : { ...t, is_default: false })) : next);
     setSel(r.data.id);
     setDraft(null);
     setMsg({ text: "Template saved. Pick it in the Bulk Lister when listing on eBay." });
@@ -74,8 +89,8 @@ export default function Templates({ edition, initial, defaults, store }: {
           ))}
         </ul>
         <p className="text-[12px] text-muted">
-          Templates from your PC come over when FireCardManager syncs; change them there (Listing Templates). Make a copy to change one here.
-          The ★ default is used unless you pick another in the Bulk Lister.
+          Edit any template here. Editing the built-in one (or one from FireCardManager on your PC) saves your own version, so your changes
+          aren&apos;t lost when FireCardManager syncs. The ★ default is used unless you pick another in the Bulk Lister.
         </p>
       </aside>
 
@@ -90,6 +105,10 @@ export default function Templates({ edition, initial, defaults, store }: {
               <textarea className="field h-72 font-mono text-[12px]" value={draft.description_html} onChange={(e) => setDraft({ ...draft, description_html: e.target.value })} />
             </label>
             <p className="text-[12px] text-muted">Fields you can use: {TOKENS.join(" ")}</p>
+            <label className="flex items-center gap-2 text-[13px]">
+              <input type="checkbox" checked={draft.is_default} onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })} />
+              Use this template by default (★)
+            </label>
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" className="btn" disabled={busy} onClick={save}>{busy ? "Saving..." : "Save template"}</button>
               <button type="button" className="btn-ghost" onClick={() => setDraft(null)}>Cancel</button>
@@ -98,7 +117,7 @@ export default function Templates({ edition, initial, defaults, store }: {
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="mr-auto text-[18px] font-bold">{cur.name}</h2>
-            {cur.source === "web" && cur.id !== "builtin" && <button type="button" className="btn-ghost !py-1.5" onClick={() => setDraft({ ...cur })}>Edit</button>}
+            <button type="button" className="btn !py-1.5" onClick={() => edit(cur)}>Edit</button>
             <button type="button" className="btn-ghost !py-1.5" onClick={() => copy(cur)}>Make a copy</button>
             {cur.source === "web" && cur.id !== "builtin" && <button type="button" className="btn-ghost !py-1.5 text-bad" onClick={() => remove(cur)}>Delete</button>}
           </div>
@@ -106,9 +125,9 @@ export default function Templates({ edition, initial, defaults, store }: {
         {msg && <p role="status" className={`text-[13px] ${msg.bad ? "text-bad" : "text-go"}`}>{msg.text}</p>}
         <div className="card space-y-2">
           <p className="text-[12px] font-semibold uppercase text-muted">Preview with a sample card</p>
-          <p className="font-semibold">{fill(cur.title_template, store).replace(/\s{2,}/g, " ").trim()}</p>
+          <p className="font-semibold">{fill(cur.title_template, store, edition).replace(/\s{2,}/g, " ").trim()}</p>
           <iframe title="Description preview" sandbox="" className="h-[640px] w-full rounded-lg border border-line bg-white"
-            srcDoc={fill(cur.description_html, store) + '<p style="margin-top:16px;color:#666;font-size:12px;">Provided by FireCardManager.com</p>'} />
+            srcDoc={fill(cur.description_html, store, edition) + '<p style="margin-top:16px;color:#666;font-size:12px;">Provided by FireCardManager.com</p>'} />
         </div>
       </section>
     </div>

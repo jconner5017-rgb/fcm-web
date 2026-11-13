@@ -1966,3 +1966,23 @@ func TestEbayRefresh(t *testing.T) {
 		t.Fatalf("second refresh: %v", res)
 	}
 }
+
+func TestTemplateDefaultOnWeb(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("tpl-web@example.com")
+	pc := e.link(owner, "sports", "HWID-TW", "")
+	pc.must(204, "POST", "/v1/devices/templates", map[string]any{"templates": []map[string]any{
+		{"name": "PC one", "title_template": "{PlayerName}", "description_html": "<p>pc</p>", "is_default": true}}})
+	a := owner.must(200, "POST", "/v1/templates", map[string]any{"edition": "sports", "name": "Store Branded", "title_template": "{PlayerName}", "description_html": "<p>a</p>", "is_default": true})
+	b := owner.must(200, "POST", "/v1/templates", map[string]any{"edition": "sports", "name": "Other", "title_template": "{PlayerName}", "description_html": "<p>b</p>", "is_default": true})
+	tl := owner.must(200, "GET", "/v1/templates", nil)["templates"].([]any)
+	first := tl[0].(map[string]any)
+	if first["id"] != b["id"] || a["is_default"] != true {
+		t.Fatalf("default: %v", tl)
+	}
+	for _, x := range tl[1:] {
+		if m := x.(map[string]any); m["source"] == "web" && m["is_default"] == true {
+			t.Fatalf("two web defaults: %v", tl)
+		}
+	}
+}
