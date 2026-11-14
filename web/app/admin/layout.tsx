@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getMe } from "@/lib/api";
+import { apiGet, getMe } from "@/lib/api";
 
 export const metadata = { title: "Back office" };
 
@@ -15,6 +15,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       <div className="mt-8 max-w-[640px]">
         <h1 className="text-[26px] font-bold">Back office</h1>
         <p className="card mt-4">Turn on two-factor sign-in on your <Link href="/account" className="font-semibold text-fire">Account page</Link> first. The back office needs it.</p>
+      </div>
+    );
+  }
+  const access = await apiGet<{ ok: boolean }>("/v1/admin/access");
+  if (access.code === "ip_not_allowed") {
+    return (
+      <div className="mt-8 max-w-[640px]">
+        <h1 className="text-[26px] font-bold">Back office</h1>
+        <p className="card mt-4">The back office can&apos;t be used from this network. An owner can add it on the Staff page from an allowed network.</p>
       </div>
     );
   }

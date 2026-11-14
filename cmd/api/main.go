@@ -140,7 +140,8 @@ func run(log *slog.Logger) error {
 
 	srv := httpapi.New(httpapi.Options{
 		FormKey: formKey, TurnstileSiteKey: os.Getenv("TURNSTILE_SITE_KEY"), TurnstileSecret: os.Getenv("TURNSTILE_SECRET"), SignupsPerIPDay: perIP,
-		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
+		BackofficeIPAllowlistOff: os.Getenv("BACKOFFICE_IP_ALLOWLIST") == "off",
+		DB:                       database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
 		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc, Lister: listerSvc, Ebay: ebaySvc,
 		Log: log, CookieSecure: appEnv != "dev", SessionTTL: authSvc.SessionTTL,
 		TrustProxy: env("TRUST_PROXY_HEADERS", "false") == "true", WebURL: webURL,

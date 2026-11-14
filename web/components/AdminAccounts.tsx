@@ -77,7 +77,7 @@ export default function AdminAccounts({ initial, canBill }: { initial: AdminAcco
                     <Link href={`/admin/members/${a.id}`} className="font-bold hover:text-fire">{a.email}</Link>
                     {a.is_admin && <span className="ml-1 text-fire">owner</span>}
                     {a.staff_role && <span className="ml-1 text-fire">{a.staff_role}</span>}
-                    {a.status === "disabled" && <span className="ml-1 rounded-full bg-bad px-2 py-0.5 text-[11px] font-bold text-white">suspended</span>}
+                    {a.status === "disabled" && <span className="ml-1 rounded-full bg-bad px-2 py-0.5 text-[11px] font-bold text-white">{(a.suspended_reason ?? "").startsWith("Banned") ? "banned" : "suspended"}</span>}
                     {a.web_addon_note && <span className="block text-[12px] text-muted">{a.web_addon_note}</span>}
                   </td>
                   <td className="py-2 pr-3">{shortDate(a.created_at)}</td>

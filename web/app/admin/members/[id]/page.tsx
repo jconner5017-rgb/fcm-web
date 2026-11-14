@@ -14,6 +14,7 @@ type Member = AdminAccount & {
   notes: { id: number; author: string; body: string; at: string }[];
   audit: { id: number; actor_email: string; action: string; detail?: string; at: string }[];
   related: { id?: string; email: string; reason: string }[];
+  banned_at?: string;
 };
 
 function agent(ua: string): string {
@@ -40,7 +41,7 @@ export default async function MemberPage({ params }: { params: Promise<{ id: str
           two-factor {m.mfa_enabled ? "on" : "off"} · {m.sessions} signed-in browser{m.sessions === 1 ? "" : "s"} · {m.cards.toLocaleString()} cards · {m.sold} sold
           {m.staff_role ? ` · staff: ${m.staff_role}` : ""}{m.is_admin ? " · owner" : ""}
         </p>
-        {suspended && <p className="mt-2 rounded-lg border border-bad px-3 py-2 text-bad">Suspended: {m.suspended_reason || "no reason given"}</p>}
+        {suspended && <p className="mt-2 rounded-lg border border-bad px-3 py-2 text-bad">{m.banned_at ? `Banned ${shortDate(m.banned_at)}` : "Suspended"}: {(m.suspended_reason || "no reason given").replace(/^Banned: /, "")}</p>}
         {m.closing_at && <p className="mt-2 rounded-lg border border-bad px-3 py-2 text-bad">Closed {shortDate(m.closing_at)}; data is being deleted.</p>}
         {trialReuseText(m.trial_ended_reason) && <p className="mt-2 text-[14px]">Free trial ended early: {trialReuseText(m.trial_ended_reason)}.</p>}
       </div>
@@ -53,7 +54,7 @@ export default async function MemberPage({ params }: { params: Promise<{ id: str
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="card space-y-3">
           <h2 className="text-[18px] font-bold">Actions and notes</h2>
-          <MemberActions id={m.id} email={m.email} suspended={suspended} protectedAcct={protectedAcct} />
+          <MemberActions id={m.id} email={m.email} suspended={suspended} banned={!!m.banned_at} canBan={canBill} protectedAcct={protectedAcct} />
           <ul className="space-y-2 text-[14px]">
             {m.notes.map((n) => (
               <li key={n.id} className="rounded-lg border border-line p-2"><p className="whitespace-pre-wrap">{n.body}</p>

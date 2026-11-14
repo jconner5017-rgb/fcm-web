@@ -115,7 +115,7 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	}
 	if err := s.DB.QueryRowContext(ctx, `SELECT
 			(SELECT count(*) FROM login_events WHERE reason LIKE 'signup_blocked%' AND created_at > now() - interval '7 days'),
-			(SELECT count(*) FROM login_events WHERE NOT success AND coalesce(reason, '') NOT LIKE 'signup%' AND created_at > now() - interval '1 day'),
+			(SELECT count(*) FROM login_events WHERE NOT success AND coalesce(reason, '') NOT LIKE 'signup%' AND coalesce(reason, '') NOT LIKE 'banned%' AND created_at > now() - interval '1 day'),
 			(SELECT count(*) FROM devices WHERE revoked_at IS NULL),
 			(SELECT count(*) FROM sync_cards WHERE deleted_at IS NULL),
 			(SELECT count(*) FROM sync_photos)`).Scan(&o.BlockedSignups7, &o.FailedSignIns1, &o.LinkedPCs, &o.Cards, &o.Photos); err != nil {
@@ -141,6 +141,7 @@ var Filters = map[string]string{
 	"closing":    `a.closing_at IS NOT NULL`,
 	"reused":     `a.trial_ended_reason IN ('email', 'pc', 'inventory')`,
 	"staff":      `(a.is_admin OR a.staff_role IS NOT NULL)`,
+	"banned":     `a.banned_at IS NOT NULL`,
 	"unverified": `a.email_verified_at IS NULL`,
 }
 
@@ -187,6 +188,7 @@ type Member struct {
 	Notes     []Note       `json:"notes"`
 	Audit     []AuditEntry `json:"audit"`
 	Related   []Related    `json:"related"`
+	BannedAt  *time.Time   `json:"banned_at,omitempty"`
 	SoldCount int          `json:"sold"`
 }
 
@@ -201,15 +203,19 @@ func (s *Service) Member(ctx context.Context, id string) (Member, error) {
 	}
 	m.AdminRow = list[0]
 	var ip sql.NullString
-	var closing sql.NullTime
-	if err := s.DB.QueryRowContext(ctx, `SELECT signup_ip, closing_at,
+	var closing, banned sql.NullTime
+	if err := s.DB.QueryRowContext(ctx, `SELECT signup_ip, closing_at, banned_at,
 			EXISTS (SELECT 1 FROM account_mfa f WHERE f.account_id = a.id AND f.confirmed_at IS NOT NULL),
 			(SELECT count(*) FROM sessions x WHERE x.account_id = a.id AND x.expires_at > now()),
 			(SELECT count(*) FROM sync_cards c WHERE c.account_id = a.id AND c.deleted_at IS NULL AND c.status = 'Sold')
-		FROM accounts a WHERE a.id = $1`, m.ID).Scan(&ip, &closing, &m.MFA, &m.Sessions, &m.SoldCount); err != nil {
+		FROM accounts a WHERE a.id = $1`, m.ID).Scan(&ip, &closing, &banned, &m.MFA, &m.Sessions, &m.SoldCount); err != nil {
 		return m, err
 	}
 	m.SignupIP = ip.String
+	if banned.Valid {
+		t := banned.Time
+		m.BannedAt = &t
+	}
 	if closing.Valid {
 		t := closing.Time
 		m.Closing = &t

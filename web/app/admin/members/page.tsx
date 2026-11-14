@@ -4,7 +4,7 @@ import type { AdminAccount } from "@/lib/types";
 import AdminAccounts from "@/components/AdminAccounts";
 
 const FILTERS: [string, string][] = [["", "All"], ["trial", "Free trial"], ["paid", "Paid"], ["off", "Sync off"], ["reused", "Trial reused"],
-  ["suspended", "Suspended"], ["unverified", "Email not confirmed"], ["closing", "Closing"], ["staff", "Staff"]];
+  ["suspended", "Suspended"], ["banned", "Banned"], ["unverified", "Email not confirmed"], ["closing", "Closing"], ["staff", "Staff"]];
 
 export default async function Members({ searchParams }: { searchParams: Promise<{ q?: string; filter?: string }> }) {
   const { q = "", filter = "" } = await searchParams;

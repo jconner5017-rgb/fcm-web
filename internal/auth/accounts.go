@@ -60,7 +60,7 @@ func (a Account) Can(perm string) bool {
 	}
 	switch a.StaffRole {
 	case "manager":
-		return perm == "view" || perm == "act" || perm == "billing"
+		return perm == "view" || perm == "act" || perm == "billing" || perm == "ban"
 	case "support":
 		return perm == "view" || perm == "act"
 	}

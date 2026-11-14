@@ -57,6 +57,10 @@ type Options struct {
 	TurnstileSecret  string
 	TurnstileURL     string // tests
 	SignupsPerIPDay  int    // 0: no cap
+
+	// BackofficeIPAllowlistOff ignores the back office network allowlist
+	// (BACKOFFICE_IP_ALLOWLIST=off), for when staff lock themselves out.
+	BackofficeIPAllowlistOff bool
 }
 
 type Server struct {
@@ -73,6 +77,7 @@ type Server struct {
 	templates *templates.Service
 	trial     *trial.Service
 	office    *backoffice.Service
+	ipRules   *backoffice.IPRules
 
 	formKey          []byte
 	turnstileSiteKey string
@@ -103,6 +108,7 @@ func New(o Options) *Server {
 		formKey: o.FormKey, turnstileSiteKey: o.TurnstileSiteKey, turnstileSecret: o.TurnstileSecret,
 		turnstileURL:    map[bool]string{true: o.TurnstileURL, false: "https://challenges.cloudflare.com/turnstile/v0/siteverify"}[o.TurnstileURL != ""],
 		signupsPerIPDay: o.SignupsPerIPDay, office: &backoffice.Service{DB: o.DB, Auth: o.Auth},
+		ipRules:     &backoffice.IPRules{DB: o.DB, Disabled: o.BackofficeIPAllowlistOff},
 		authLimiter: newRateLimiter(20, time.Minute),
 		linkLimiter: newRateLimiter(10, time.Minute),
 		mailLimiter: newRateLimiter(5, 10*time.Minute),
@@ -217,6 +223,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/audit", s.requireStaff("view", s.handleOfficeAudit))
 	mux.HandleFunc("GET /v1/admin/staff", s.requireStaff("staff", s.handleOfficeStaff))
 	mux.HandleFunc("PUT /v1/admin/staff", s.requireStaff("staff", s.handleOfficeSetStaff))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/ban", s.requireStaff("ban", s.handleOfficeBan))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/unban", s.requireStaff("ban", s.handleOfficeUnban))
+	mux.HandleFunc("GET /v1/admin/access", s.requireStaff("view", s.handleOfficeAccess))
+	mux.HandleFunc("GET /v1/admin/ip-rules", s.requireStaff("staff", s.handleIPRules))
+	mux.HandleFunc("POST /v1/admin/ip-rules", s.requireStaff("staff", s.handleIPRuleAdd))
+	mux.HandleFunc("DELETE /v1/admin/ip-rules/{id}", s.requireStaff("staff", s.handleIPRuleRemove))
 	mux.HandleFunc("POST /v1/me/close", requireAccount(s.limited(s.authLimiter, s.handleCloseAccount)))
 
 	var h http.Handler = mux
@@ -323,6 +335,11 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	if b := s.signupGuard(r, in.Email, in.Website, in.FormToken, in.Turnstile); b != nil {
 		s.signupEvent(r.Context(), nil, strings.TrimSpace(in.Email), ip, r.UserAgent(), false, "signup_blocked:"+b.reason)
 		writeError(w, b.status, b.code, b.message, nil)
+		return
+	}
+	if banned, _, err := backoffice.Banned(r.Context(), s.db, "email", in.Email); err == nil && banned {
+		s.signupEvent(r.Context(), nil, strings.TrimSpace(in.Email), ip, r.UserAgent(), false, "signup_blocked:banned_email")
+		writeError(w, http.StatusForbidden, "email_blocked", "This email can't be used to open an account.", map[string]string{"email": "Can't be used."})
 		return
 	}
 	a, err := s.auth.Signup(r.Context(), in.Email, in.Password)
@@ -792,6 +809,14 @@ func (s *Server) handleLinkApprove(w http.ResponseWriter, r *http.Request) {
 		UserCode string `json:"user_code"`
 	}
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	// A banned seller's PC can't be linked to any account.
+	var hwid string
+	s.db.QueryRowContext(r.Context(), `SELECT hwid FROM device_links WHERE replace(user_code, '-', '') = upper(replace(replace($1, '-', ''), ' ', ''))`, strings.TrimSpace(in.UserCode)).Scan(&hwid)
+	if banned, _, err := backoffice.Banned(r.Context(), s.db, "hwid", hwid); err == nil && banned {
+		s.signupEvent(r.Context(), sess.Account.ID, sess.Account.Email, clientIP(r, s.trustProxy), r.UserAgent(), false, "banned_pc")
+		writeError(w, http.StatusForbidden, "pc_blocked", "This PC can't be linked to FireCardManager Web. Contact FireCardManager support.", nil)
 		return
 	}
 	err := s.devices.Approve(r.Context(), sess.Account.ID, in.UserCode)

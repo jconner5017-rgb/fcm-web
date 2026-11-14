@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
 	"github.com/jconner5017-rgb/fcm-web/internal/backoffice"
@@ -19,6 +20,10 @@ func (s *Server) requireStaff(perm string, next http.HandlerFunc) http.HandlerFu
 		}
 		if st, err := s.mfa.Status(r.Context(), sess.Account.ID); err != nil || st == "setup_required" {
 			writeError(w, http.StatusForbidden, "mfa_setup_required", "Turn on two-factor sign-in (Account page) to use the back office.", nil)
+			return
+		}
+		if ok, err := s.ipRules.Allowed(r.Context(), clientIP(r, s.trustProxy)); err != nil || !ok {
+			writeError(w, http.StatusForbidden, "ip_not_allowed", "The back office can't be used from this network.", nil)
 			return
 		}
 		next(w, r)
@@ -201,5 +206,92 @@ func (s *Server) handleOfficeSetStaff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "staff_role", id, map[bool]string{true: "removed", false: in.Role}[in.Role == ""])
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleOfficeAccess(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleOfficeBan(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	id := r.PathValue("id")
+	if in.Reason == "" {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Say why (staff only).", map[string]string{"reason": "Required."})
+		return
+	}
+	if !s.canTouch(w, r, id) {
+		return
+	}
+	if err := s.office.Ban(r.Context(), id, in.Reason); err != nil {
+		s.officeError(w, r, err)
+		return
+	}
+	s.audit(r, "ban", id, in.Reason)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleOfficeUnban(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canTouch(w, r, id) {
+		return
+	}
+	if err := s.office.Unban(r.Context(), id); err != nil {
+		s.officeError(w, r, err)
+		return
+	}
+	s.audit(r, "unban", id, "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleIPRules(w http.ResponseWriter, r *http.Request) {
+	list, err := s.ipRules.List(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": list, "your_ip": clientIP(r, s.trustProxy), "enforced": !s.ipRules.Disabled})
+}
+
+func (s *Server) handleIPRuleAdd(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		CIDR  string `json:"cidr"`
+		Label string `json:"label"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess, _ := currentSession(r)
+	rule, err := s.ipRules.Add(r.Context(), in.CIDR, in.Label, sess.Account.Email, clientIP(r, s.trustProxy))
+	switch {
+	case errors.Is(err, backoffice.ErrLockout):
+		writeError(w, http.StatusConflict, "lockout", "That would block the network you're on now. Add your current network first.", nil)
+	case err != nil && err.Error() == "bad network":
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "Enter an address like 203.0.113.7 or a range like 203.0.113.0/24.", map[string]string{"cidr": "Not a network."})
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		s.audit(r, "ip_rule_added", "", rule.CIDR+" "+rule.Label)
+		writeJSON(w, http.StatusCreated, rule)
+	}
+}
+
+func (s *Server) handleIPRuleRemove(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	err := s.ipRules.Remove(r.Context(), id, clientIP(r, s.trustProxy))
+	if errors.Is(err, backoffice.ErrLockout) {
+		writeError(w, http.StatusConflict, "lockout", "Removing that would block the network you're on now.", nil)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.audit(r, "ip_rule_removed", "", strconv.FormatInt(id, 10))
 	w.WriteHeader(http.StatusNoContent)
 }

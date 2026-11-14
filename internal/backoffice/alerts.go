@@ -50,15 +50,22 @@ func (s *Service) Alerts(ctx context.Context) ([]Alert, error) {
 			WHERE reason LIKE 'signup_blocked%%' AND created_at > now() - interval '1 day' GROUP BY ip HAVING count(*) >= %d`, BlockedSignupsPerIP1d),
 			func(a *Alert, ip, reasons string) { a.IP = ip; a.Detail = reasons }},
 		{"failed_account", "high", fmt.Sprintf(`SELECT a.id::text, a.email, '', count(*), max(e.created_at) FROM login_events e JOIN accounts a ON a.id = e.account_id
-			WHERE NOT e.success AND coalesce(e.reason, '') NOT LIKE 'signup%%' AND e.created_at > now() - interval '1 day'
+			WHERE NOT e.success AND coalesce(e.reason, '') NOT LIKE 'signup%%' AND coalesce(e.reason, '') NOT LIKE 'banned%%' AND e.created_at > now() - interval '1 day'
 			GROUP BY a.id, a.email HAVING count(*) >= %d`, FailedPerAccount1d),
 			func(a *Alert, id, email string) { a.AccountID, a.AccountEmail = id, email }},
 		{"failed_network", "high", fmt.Sprintf(`SELECT ip, string_agg(DISTINCT email, ', '), '', count(*), max(created_at) FROM login_events
-			WHERE NOT success AND coalesce(reason, '') NOT LIKE 'signup%%' AND created_at > now() - interval '1 day'
+			WHERE NOT success AND coalesce(reason, '') NOT LIKE 'signup%%' AND coalesce(reason, '') NOT LIKE 'banned%%' AND created_at > now() - interval '1 day'
 			GROUP BY ip HAVING count(*) >= %d`, FailedPerIP1d),
 			func(a *Alert, ip, emails string) { a.IP = ip; a.Detail = emails }},
 		{"many_networks", "medium", fmt.Sprintf(`SELECT a.id::text, a.email, '', count(DISTINCT e.ip), max(e.created_at) FROM login_events e JOIN accounts a ON a.id = e.account_id
 			WHERE e.success AND e.created_at > now() - interval '1 day' GROUP BY a.id, a.email HAVING count(DISTINCT e.ip) >= %d`, NetworksPerAccount1d),
+			func(a *Alert, id, email string) { a.AccountID, a.AccountEmail = id, email }},
+		{"banned_network", "high", `SELECT a.id::text, a.email, max(b.account_email), 1, a.created_at FROM accounts a
+			JOIN banned_identifiers b ON b.kind = 'ip' AND b.value_hash = encode(sha256(('ban:ip:' || a.signup_ip)::bytea), 'hex') AND b.account_ref <> a.id
+			WHERE a.created_at > now() - interval '30 days' AND a.banned_at IS NULL GROUP BY a.id, a.email, a.created_at`,
+			func(a *Alert, id, email string) { a.AccountID, a.AccountEmail = id, email }},
+		{"banned_pc", "high", `SELECT a.id::text, a.email, '', count(*), max(e.created_at) FROM login_events e JOIN accounts a ON a.id = e.account_id
+			WHERE e.reason = 'banned_pc' AND e.created_at > now() - interval '30 days' GROUP BY a.id, a.email`,
 			func(a *Alert, id, email string) { a.AccountID, a.AccountEmail = id, email }},
 		{"shared_pc", "medium", fmt.Sprintf(`SELECT max(d.name), string_agg(DISTINCT a.email, ', '), '', count(DISTINCT d.account_id), max(d.created_at)
 			FROM devices d JOIN accounts a ON a.id = d.account_id GROUP BY upper(d.hwid) HAVING count(DISTINCT d.account_id) >= %d`, AccountsPerPC),
@@ -93,6 +100,12 @@ func (s *Service) Alerts(ctx context.Context) ([]Alert, error) {
 			case "many_networks":
 				a.Title = fmt.Sprintf("Signed in from %d networks today", a.Count)
 				a.Detail = "The account may be shared, or its password known to someone else."
+			case "banned_network":
+				a.Title = "New account from a banned seller's network"
+				a.Detail = "Banned account: " + s3 + ". It may be the same person, or a shared network."
+			case "banned_pc":
+				a.Title = "Tried to link a banned seller's PC"
+				a.Detail = "The link was refused."
 			case "shared_pc":
 				a.Title = fmt.Sprintf("One PC linked to %d accounts", a.Count)
 			}

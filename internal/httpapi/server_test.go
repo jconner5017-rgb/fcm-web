@@ -189,7 +189,7 @@ func setup(t *testing.T) *env {
 	if err := db.Migrate(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed CASCADE`); err != nil {
+	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed, banned_identifiers, admin_ip_rules CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
@@ -2103,7 +2103,7 @@ func TestBackOffice(t *testing.T) {
 	if ov["accounts"].(float64) != 3 || ov["signups_1"].(float64) != 3 || ov["blocked_signups_7"].(float64) != 2 {
 		t.Fatalf("overview: %v", ov)
 	}
-	helper.must(403, "GET", "/v1/admin/staff", nil)                                                                // owners only
+	helper.must(403, "GET", "/v1/admin/staff", nil)                                                             // owners only
 	helper.must(403, "POST", "/v1/admin/accounts/"+memberID+"/trial", map[string]string{"until": "2030-01-01"}) // support: no billing
 
 	// Support: notes, suspend (signs them out), unsuspend.
@@ -2152,4 +2152,41 @@ func TestBackOffice(t *testing.T) {
 	// Taking the role away ends access.
 	owner.must(204, "PUT", "/v1/admin/staff", map[string]string{"email": "helper@example.com", "role": ""})
 	helper.must(403, "GET", "/v1/admin/overview", nil)
+
+	// Ban: the email can't sign up again, the PC can't be linked again, and a
+	// new account from the same network raises an alert.
+	bad := e.signup("bad.actor@example.com")
+	badID := bad.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)["id"].(string)
+	e.link(bad, "sports", "HWID-BANNED", "")
+	owner.must(204, "POST", "/v1/admin/accounts/"+badID+"/ban", map[string]string{"reason": "Fraud"})
+	if out := e.browser().must(403, "POST", "/v1/auth/signup", map[string]string{"email": "Bad.Actor+again@example.com", "password": "long enough pw"}); errCode(out) != "email_blocked" {
+		t.Fatal(out)
+	}
+	newcomer := e.signup("newcomer@example.com")
+	app := &client{e: e}
+	start := app.must(200, "POST", "/v1/devices/link/start", map[string]string{"device_name": "PC", "edition": "sports", "hwid": "hwid-banned", "app_version": "1.0"})
+	if out := newcomer.must(403, "POST", "/v1/devices/link/approve", map[string]string{"user_code": start["user_code"].(string)}); errCode(out) != "pc_blocked" {
+		t.Fatal(out)
+	}
+	kinds := map[string]bool{}
+	for _, a := range owner.must(200, "GET", "/v1/admin/alerts", nil)["alerts"].([]any) {
+		kinds[a.(map[string]any)["kind"].(string)] = true
+	}
+	if !kinds["banned_network"] || !kinds["banned_pc"] {
+		t.Fatalf("ban alerts: %v", kinds)
+	}
+	if m := owner.must(200, "GET", "/v1/admin/accounts/"+badID, nil); m["banned_at"] == nil || m["status"] != "disabled" {
+		t.Fatalf("banned member: %v", m)
+	}
+	owner.must(204, "POST", "/v1/admin/accounts/"+badID+"/unban", nil)
+	e.signup("bad.actor+again@example.com")
+
+	// Back office network allowlist: can't lock yourself out.
+	if out := owner.must(409, "POST", "/v1/admin/ip-rules", map[string]string{"cidr": "203.0.113.0/24"}); errCode(out) != "lockout" {
+		t.Fatal(out)
+	}
+	rule := owner.must(201, "POST", "/v1/admin/ip-rules", map[string]string{"cidr": "127.0.0.1", "label": "Office"})
+	owner.must(201, "POST", "/v1/admin/ip-rules", map[string]string{"cidr": "203.0.113.0/24"})
+	owner.must(200, "GET", "/v1/admin/overview", nil)
+	owner.must(409, "DELETE", fmt.Sprintf("/v1/admin/ip-rules/%v", rule["id"]), nil)
 }
