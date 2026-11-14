@@ -1109,6 +1109,9 @@ func (s *Server) handleInvSold(w http.ResponseWriter, r *http.Request) {
 		f = append(f, inventory.SoldFilter{Days: days, Where: v.Get("where"), ShowShipped: v.Get("shipped") == "1", ShowArchived: v.Get("archived") == "1"})
 	}
 	per := 0
+	if v.Get("view") == "1" {
+		per = 50 // 50 sales a page, like Live Listings
+	}
 	if v.Get("all") == "1" {
 		per = -1
 	}

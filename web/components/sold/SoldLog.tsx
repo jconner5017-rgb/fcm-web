@@ -214,10 +214,13 @@ export default function SoldLog({ edition }: { edition: string }) {
       </div>
 
       {pages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-[14px]">
-          <button type="button" className="btn-ghost" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
-          <span className="num text-muted">Page {page} of {pages}</span>
-          <button type="button" className="btn-ghost" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next</button>
+        <div className="flex flex-wrap items-center justify-center gap-2 text-[13px]">
+          <button type="button" className="btn-ghost !py-1" disabled={page <= 1} onClick={() => setPage(1)}>⏮ First</button>
+          <button type="button" className="btn-ghost !py-1" disabled={page <= 1} onClick={() => setPage(page - 1)}>◀ Previous</button>
+          <span className="font-semibold">Page {page} of {pages}</span>
+          <span className="text-muted">({data?.total} sale{data?.total === 1 ? "" : "s"})</span>
+          <button type="button" className="btn-ghost !py-1" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next ▶</button>
+          <button type="button" className="btn-ghost !py-1" disabled={page >= pages} onClick={() => setPage(pages)}>Last ⏭</button>
         </div>
       )}
     </div>
