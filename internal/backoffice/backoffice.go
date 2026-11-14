@@ -183,7 +183,7 @@ type Member struct {
 	Closing   *time.Time   `json:"closing_at,omitempty"`
 	MFA       bool         `json:"mfa_enabled"`
 	Sessions  int          `json:"sessions"`
-	Devices   []Device     `json:"devices"`
+	PCs       []Device     `json:"pcs"`
 	SignIns   []SignIn     `json:"sign_ins"`
 	Notes     []Note       `json:"notes"`
 	Audit     []AuditEntry `json:"audit"`
@@ -221,7 +221,7 @@ func (s *Service) Member(ctx context.Context, id string) (Member, error) {
 		m.Closing = &t
 	}
 
-	m.Devices = []Device{}
+	m.PCs = []Device{}
 	rows, err := s.DB.QueryContext(ctx, `SELECT d.id, d.name, d.edition, coalesce(d.app_version, ''), d.created_at, d.last_seen_at, d.revoked_at,
 			(SELECT count(DISTINCT o.account_id) FROM devices o WHERE upper(o.hwid) = upper(d.hwid) AND o.account_id <> d.account_id)
 		FROM devices d WHERE d.account_id = $1 ORDER BY d.revoked_at NULLS FIRST, d.created_at DESC`, m.ID)
@@ -243,7 +243,7 @@ func (s *Service) Member(ctx context.Context, id string) (Member, error) {
 			t := rev.Time
 			d.Revoked = &t
 		}
-		m.Devices = append(m.Devices, d)
+		m.PCs = append(m.PCs, d)
 	}
 	rows.Close()
 

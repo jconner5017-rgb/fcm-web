@@ -9,7 +9,7 @@ import { ACTIONS } from "@/lib/admin";
 
 type Member = AdminAccount & {
   signup_ip?: string; closing_at?: string; mfa_enabled: boolean; sessions: number; sold: number;
-  devices: { id: string; name: string; edition: string; app_version?: string; created_at: string; last_seen_at?: string; revoked_at?: string; shared_with: number }[];
+  pcs: { id: string; name: string; edition: string; app_version?: string; created_at: string; last_seen_at?: string; revoked_at?: string; shared_with: number }[];
   sign_ins: { at: string; ip: string; user_agent: string; success: boolean; reason?: string }[];
   notes: { id: number; author: string; body: string; at: string }[];
   audit: { id: number; actor_email: string; action: string; detail?: string; at: string }[];
@@ -78,11 +78,11 @@ export default async function MemberPage({ params }: { params: Promise<{ id: str
 
       <section>
         <h2 className="text-[18px] font-bold">Linked PCs</h2>
-        {m.devices.length === 0 ? <p className="text-[14px] text-muted">None.</p> : (
+        {m.pcs.length === 0 ? <p className="text-[14px] text-muted">None.</p> : (
           <table className="mt-2 w-full text-left text-[14px]">
             <thead className="border-b border-line text-muted"><tr><th className="py-2 pr-3">PC</th><th className="pr-3">App</th><th className="pr-3">Linked</th><th className="pr-3">Last sync</th><th>Also linked to</th></tr></thead>
             <tbody className="divide-y divide-line">
-              {m.devices.map((d) => (
+              {m.pcs.map((d) => (
                 <tr key={d.id} className={d.revoked_at ? "text-muted" : ""}>
                   <td className="py-2 pr-3 font-semibold">{d.name}{d.revoked_at ? " (unlinked)" : ""}</td>
                   <td className="pr-3">{d.edition === "tcg" ? "TCG" : "Sports"} {d.app_version}</td>
