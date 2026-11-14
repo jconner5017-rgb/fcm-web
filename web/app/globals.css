@@ -67,3 +67,18 @@ body {
 .vet-dark { display: none; }
 :root[data-theme="dark"] .vet-light { display: none; }
 :root[data-theme="dark"] .vet-dark { display: block; }
+
+/* Seasonal looks (lib/season.ts): the accent colour and a stripe under the
+   header. Green and red stay as they are, since they mean go and stop. */
+:root[data-season="christmas"] { --color-fire: #c8102e; --color-fire-dark: #a30d25; --season-bar: repeating-linear-gradient(135deg,#c8102e 0 18px,#fff 18px 24px,#1f8a4c 24px 42px,#fff 42px 48px); }
+:root[data-season="newyear"] { --color-fire: #b8860b; --color-fire-dark: #9a7009; --season-bar: linear-gradient(90deg,#b8860b,#f5e6a8,#c0c0c0,#f5e6a8,#b8860b); }
+:root[data-season="halloween"] { --color-fire: #f06d06; --color-fire-dark: #c75a05; --season-bar: repeating-linear-gradient(135deg,#f06d06 0 18px,#1a1a1a 18px 36px,#7e3ff2 36px 54px); }
+:root[data-season="july4"] { --color-fire: #b22234; --color-fire-dark: #8f1b2a; --season-bar: linear-gradient(90deg,#b22234 0 33%,#fff 33% 66%,#3c3b6e 66%); }
+:root[data-season="veterans"] { --color-fire: #2b4c9b; --color-fire-dark: #223d7c; --season-bar: linear-gradient(90deg,#3c3b6e 0 33%,#fff 33% 66%,#b22234 66%); }
+:root[data-season="thanksgiving"] { --color-fire: #b45309; --color-fire-dark: #92400e; --season-bar: repeating-linear-gradient(135deg,#b45309 0 18px,#d97706 18px 36px,#7c2d12 36px 54px,#ca8a04 54px 72px); }
+:root[data-theme="dark"][data-season="veterans"] { --color-fire: #4c6fd1; --color-fire-dark: #6f8de0; }
+:root[data-theme="dark"][data-season="july4"] { --color-fire: #d23a4c; }
+:root[data-theme="dark"][data-season="christmas"] { --color-fire: #e0303f; }
+:root[data-season] body { border-top: 5px solid transparent; border-image: var(--season-bar) 1; }
+.season-banner { background: var(--color-wash); border-bottom: 1px solid var(--color-line); }
+:root:not([data-season]) .season-banner { display: none; }

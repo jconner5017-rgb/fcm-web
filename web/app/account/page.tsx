@@ -9,6 +9,7 @@ import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
 import CloseAccount from "@/components/CloseAccount";
 import BuyPlan from "@/components/BuyPlan";
+import SeasonPicker from "@/components/SeasonPicker";
 
 export const metadata = { title: "Account" };
 
@@ -40,6 +41,10 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
       <section className="card space-y-3" id="plan">
         <h2 className="text-[18px] font-bold">{addonActive(a) ? "Renew your plan" : "Choose a plan"}</h2>
         <BuyPlan plans={billingRes.data?.plans ?? []} payments={billingRes.data?.payments ?? []} paid={paid === "1"} active={addonActive(a)} />
+      </section>
+      <section className="card space-y-2" id="seasonal">
+        <h2 className="text-[18px] font-bold">Holiday looks</h2>
+        <SeasonPicker />
       </section>
       <section className="card" id="ai-key">
         <h2 className="text-[18px] font-bold">AI key for phone identification</h2>
