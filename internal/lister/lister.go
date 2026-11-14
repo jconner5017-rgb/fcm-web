@@ -52,6 +52,7 @@ type Service struct {
 	PhotoLink func(photoID string) string
 	Log       *slog.Logger
 	polCache  sync.Map // eBay policies per account and shipping profile
+	slabsLive sync.Map // account -> slabsCopy, the site's listings for Live Listings
 	Templates *templates.Service
 	Pause     time.Duration // between cards (be gentle with the marketplace)
 }

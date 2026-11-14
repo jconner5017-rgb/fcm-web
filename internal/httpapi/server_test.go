@@ -1556,6 +1556,17 @@ func TestLiveListings(t *testing.T) {
 		t.Fatalf("live: %v", l)
 	}
 	owner.must(409, "POST", "/v1/live/slabs/end", map[string]any{"card_ids": []string{uuid(981)}})
+	// Pages, counts, filter and search.
+	p := owner.must(200, "GET", "/v1/live?per_page=1&page=2", nil)
+	if len(p["cards"].([]any)) != 1 || p["total"].(float64) != 2 || p["all"].(float64) != 2 || p["ebay"].(float64) != 1 || p["slabs"].(float64) != 1 {
+		t.Fatalf("page: %v", p)
+	}
+	if p := owner.must(200, "GET", "/v1/live?where=ebay", nil); p["total"].(float64) != 1 || p["cards"].([]any)[0].(map[string]any)["id"] != uuid(982) {
+		t.Fatalf("ebay: %v", p)
+	}
+	if p := owner.must(200, "GET", "/v1/live?q=fcm-5+s%26s", nil); p["total"].(float64) != 1 || p["cards"].([]any)[0].(map[string]any)["id"] != uuid(981) {
+		t.Fatalf("search: %v", p)
+	}
 
 	owner.must(200, "PUT", "/v1/me/market-keys/slabs", map[string]any{"key": "ss_live_0123456789abcdefWXYZ"})
 	l = owner.must(200, "GET", "/v1/live", nil)

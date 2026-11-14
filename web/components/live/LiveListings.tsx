@@ -7,7 +7,7 @@ import { locationCode, money, setLine, thumbUrl, type CardData } from "@/lib/inv
 
 type Slabs = { id: string; status: string; price_cents: number; format: string; updated_at: string };
 type Live = { id: string; box_name?: string; data: CardData; slabs?: Slabs };
-type Res = { edition: string; cards: Live[]; slabs_checked: boolean; slabs_problem?: string };
+type Res = { edition: string; cards: Live[]; total: number; all: number; ebay: number; slabs: number; page: number; per_page: number; slabs_checked: boolean; slabs_problem?: string };
 
 type Orphan = { sku: string; title: string; listing_id: string; format: string; price: number };
 type Refresh = { live: number; matched: number; marked_live: number; price_changes: { sku: string; name: string; old: number | null; new: number }[]; orphans: Orphan[]; not_live: string[] };
@@ -42,22 +42,25 @@ export default function LiveListings({ edition, hasKey, ebayOn }: { edition: str
     load();
   }
 
-  const load = useCallback(async () => {
-    const r = await send<Res>("GET", "/v1/live?edition=" + edition);
+  // 50 a page, searched on the server, like FireCardManager's Live Listings.
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  useEffect(() => { const t = setTimeout(() => { setSearch(q.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [q]);
+  const load = useCallback(async (fresh = false) => {
+    const qs = new URLSearchParams({ edition, page: String(page), per_page: "50" });
+    if (where) qs.set("where", where);
+    if (search) qs.set("q", search);
+    if (fresh) qs.set("fresh", "1");
+    const r = await send<Res>("GET", "/v1/live?" + qs.toString());
     if (r.ok) setRes(r.data);
     else setMsg({ text: r.message, bad: true });
-  }, [edition]);
+  }, [edition, page, where, search]);
   useEffect(() => { load(); }, [load]);
 
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const cards = (res?.cards ?? []).filter((c) => {
-    if (where === "ebay" && !onEbay(c.data)) return false;
-    if (where === "slabs" && !onSlabs(c.data)) return false;
-    const text = [c.data.player_name, c.data.set_name, c.data.brand, c.data.sku, c.data.card_number, c.data.year].join(" ").toLowerCase();
-    return words.every((w) => text.includes(w));
-  });
-  const ebayCount = (res?.cards ?? []).filter((c) => onEbay(c.data)).length;
-  const slabsCount = (res?.cards ?? []).filter((c) => onSlabs(c.data)).length;
+  const cards = res?.cards ?? [];
+  const ebayCount = res?.ebay ?? 0;
+  const slabsCount = res?.slabs ?? 0;
+  const pages = Math.max(1, Math.ceil((res?.total ?? 0) / (res?.per_page || 50)));
   const sel = cards.filter((c) => picked.has(c.id));
   const selSlabs = sel.filter((c) => onSlabs(c.data));
   const selEbay = sel.filter((c) => onEbay(c.data) && c.data.ebay_offer_id);
@@ -115,13 +118,13 @@ export default function LiveListings({ edition, hasKey, ebayOn }: { edition: str
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
-          {[["", `All (${(res?.cards ?? []).length})`], ["ebay", `eBay (${ebayCount})`], ["slabs", `Slabs & Singles (${slabsCount})`]].map(([v, label]) => (
-            <button key={v} type="button" onClick={() => { setWhere(v); setPicked(new Set()); }}
+          {[["", `All (${res?.all ?? 0})`], ["ebay", `eBay (${ebayCount})`], ["slabs", `Slabs & Singles (${slabsCount})`]].map(([v, label]) => (
+            <button key={v} type="button" onClick={() => { setWhere(v); setPage(1); setPicked(new Set()); }}
               className={`rounded-full px-3 py-1 ${where === v ? "bg-fire text-white" : "hover:text-fire"}`}>{label}</button>
           ))}
         </div>
         <input className="field !mt-0 min-w-[180px] flex-1 !py-1.5" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, set, SKU..." />
-        <button type="button" className="btn-ghost !py-1.5" disabled={busy} onClick={() => { setMsg(null); load(); }}>Refresh</button>
+        <button type="button" className="btn-ghost !py-1.5" disabled={busy} onClick={() => { setMsg(null); load(true); }}>Refresh</button>
         {ebayOn && <button type="button" className="btn !py-1.5" disabled={busy} onClick={pullEbay}>Refresh from eBay</button>}
       </div>
 
@@ -227,6 +230,17 @@ export default function LiveListings({ edition, hasKey, ebayOn }: { edition: str
           </tbody>
         </table>
       </div>
+
+      {pages > 1 && (
+        <div className="flex flex-wrap items-center justify-center gap-2 text-[13px]">
+          <button type="button" className="btn-ghost !py-1" disabled={page <= 1} onClick={() => { setPage(1); setPicked(new Set()); }}>⏮ First</button>
+          <button type="button" className="btn-ghost !py-1" disabled={page <= 1} onClick={() => { setPage(page - 1); setPicked(new Set()); }}>◀ Previous</button>
+          <span className="font-semibold">Page {page} of {pages}</span>
+          <span className="text-muted">({res?.total} listing{res?.total === 1 ? "" : "s"})</span>
+          <button type="button" className="btn-ghost !py-1" disabled={page >= pages} onClick={() => { setPage(page + 1); setPicked(new Set()); }}>Next ▶</button>
+          <button type="button" className="btn-ghost !py-1" disabled={page >= pages} onClick={() => { setPage(pages); setPicked(new Set()); }}>Last ⏭</button>
+        </div>
+      )}
 
       {pulled && (pulled.orphans.length > 0 || pulled.not_live.length > 0 || pulled.price_changes.length > 0) && (
         <div className="space-y-2 rounded-lg border border-line px-3 py-2 text-[13px]">

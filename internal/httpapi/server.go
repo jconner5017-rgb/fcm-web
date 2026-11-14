@@ -1394,12 +1394,18 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	out, err := s.lister.Live(r.Context(), sess.Account.ID, ed)
+	qs := r.URL.Query()
+	page, _ := strconv.Atoi(qs.Get("page"))
+	per, _ := strconv.Atoi(qs.Get("per_page"))
+	out, err := s.lister.Live(r.Context(), sess.Account.ID, ed, lister.LiveQuery{Where: qs.Get("where"), Q: qs.Get("q"), Page: page, PerPage: per, Fresh: qs.Get("fresh") == "1"})
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"edition": ed, "cards": out.Cards, "slabs_checked": out.SlabsChecked, "slabs_problem": out.SlabsProblem})
+	writeJSON(w, http.StatusOK, struct {
+		Edition string `json:"edition"`
+		lister.LiveResult
+	}{ed, out})
 }
 
 func (s *Server) liveKeyError(w http.ResponseWriter, r *http.Request, err error) bool {
