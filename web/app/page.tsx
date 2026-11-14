@@ -1,5 +1,6 @@
 import Link from "next/link";
 import EditionSwitch from "@/components/EditionSwitch";
+import SlabsPromo from "@/components/SlabsPromo";
 import { apiGet, getMe } from "@/lib/api";
 import { ADDON_PRICE, addonActive, editionName, shortDate, when } from "@/lib/client";
 import { trialReuseText, type Device } from "@/lib/types";
@@ -62,6 +63,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
         </div>
       )}
 
+      {dash && sum && sum.editions.length > 0 && dash.slabs_live_count === 0 && <SlabsPromo ready={dash.ready_to_list_count + dash.ebay_live_count} />}
       {dash && sum && sum.editions.length > 0 && <Dashboard d={dash} />}
 
       <div className="grid gap-4 md:grid-cols-3">
