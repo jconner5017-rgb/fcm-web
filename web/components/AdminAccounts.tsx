@@ -79,7 +79,7 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
                   <td className="py-2 pr-3">{shortDate(a.created_at)}</td>
                   <td className="py-2 pr-3">
                     {addonActive(a) ? <span className="font-semibold text-go">{PLAN_NAMES[a.web_plan || "addon"] ?? "Paid"} to {shortDate(a.web_addon_until)}</span>
-                      : trialOn ? `Trial to ${shortDate(a.sync_trial_ends_at)}` : <span className="text-bad">Off</span>}
+                      : trialOn ? `Trial to ${shortDate(a.sync_trial_ends_at)}` : <span className="text-bad">Off{a.trial_ended_reason && a.trial_ended_reason !== "allowed" ? ` (trial reused: ${a.trial_ended_reason === "pc" ? "same PC" : a.trial_ended_reason === "email" ? "same email" : "same inventory"})` : ""}</span>}
                   </td>
                   <td className="num py-2 pr-3 text-right">{a.devices}</td>
                   <td className="num py-2 pr-3 text-right">{a.cards.toLocaleString()}</td>

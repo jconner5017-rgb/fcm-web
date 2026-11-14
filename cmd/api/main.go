@@ -21,11 +21,12 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
 	"github.com/jconner5017-rgb/fcm-web/internal/email"
 	"github.com/jconner5017-rgb/fcm-web/internal/export"
-	"github.com/jconner5017-rgb/fcm-web/internal/templates"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
+	"github.com/jconner5017-rgb/fcm-web/internal/templates"
+	"github.com/jconner5017-rgb/fcm-web/internal/trial"
 )
 
 func main() {
@@ -134,6 +135,9 @@ func run(log *slog.Logger) error {
 	go func() {
 		mailTick := time.NewTicker(15 * time.Second)
 		tidy := time.NewTicker(time.Hour)
+		trialTick := time.NewTicker(5 * time.Minute)
+		defer trialTick.Stop()
+		trialSvc := &trial.Service{DB: database}
 		defer mailTick.Stop()
 		defer tidy.Stop()
 		for {
@@ -145,6 +149,13 @@ func run(log *slog.Logger) error {
 					log.Warn("email outbox", "err", err)
 				} else if n > 0 {
 					log.Info("emails sent", "count", n)
+				}
+			case <-trialTick.C:
+				// Free trials reused by the same seller (email, PC or inventory) end early.
+				if n, err := trialSvc.Sweep(ctx); err != nil {
+					log.Warn("trial sweep", "err", err)
+				} else if n > 0 {
+					log.Info("reused free trials ended", "count", n)
 				}
 			case <-tidy.C:
 				if _, err := authSvc.PurgeExpiredSessions(ctx); err != nil {

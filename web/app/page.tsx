@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { apiGet, getMe } from "@/lib/api";
 import { ADDON_PRICE, addonActive, editionName, shortDate, when } from "@/lib/client";
-import type { Device } from "@/lib/types";
+import { trialReuseText, type Device } from "@/lib/types";
 import { href, type InvSummary } from "@/lib/inventory";
 import Dashboard, { type DashboardData } from "@/components/Dashboard";
 import ResendVerification from "@/components/ResendVerification";
@@ -86,7 +86,10 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
           ) : (
             <>
               <p className="mt-2 text-[18px] font-bold text-bad">Sync is off</p>
-              <p className="mt-1 text-[13px] text-muted">The trial or plan has ended. FireCardManager Web is {ADDON_PRICE}. Contact FireCardManager to add it.</p>
+              <p className="mt-1 text-[13px] text-muted">
+                {trialReuseText(a.trial_ended_reason) ? `No free trial here: ${trialReuseText(a.trial_ended_reason)} (one free trial per seller). ` : "The trial or plan has ended. "}
+                FireCardManager Web is {ADDON_PRICE}. Contact FireCardManager to add it.
+              </p>
             </>
           )}
         </div>

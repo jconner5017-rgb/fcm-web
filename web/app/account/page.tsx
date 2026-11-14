@@ -4,6 +4,7 @@ import AIKeyForm, { type AIKey } from "@/components/AIKeyForm";
 import MarketKeyForm, { type MarketKey } from "@/components/MarketKeyForm";
 import EbayConnect, { type EbayStatus } from "@/components/EbayConnect";
 import { addonActive, shortDate } from "@/lib/client";
+import { trialReuseText } from "@/lib/types";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
 import CloseAccount from "@/components/CloseAccount";
@@ -29,6 +30,9 @@ export default async function AccountPage() {
           <span className="text-muted">Cloud sync:</span>{" "}
           {addonActive(a) ? `paid until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
         </p>
+        {!addonActive(a) && trialReuseText(a.trial_ended_reason) && (
+          <p className="text-[13px] text-muted">No free trial on this account: {trialReuseText(a.trial_ended_reason)}. One free trial per seller.</p>
+        )}
       </section>
       <section className="card" id="ai-key">
         <h2 className="text-[18px] font-bold">AI key for phone identification</h2>

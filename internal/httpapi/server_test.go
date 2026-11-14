@@ -50,6 +50,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
+	"github.com/jconner5017-rgb/fcm-web/internal/trial"
 )
 
 type env struct {
@@ -188,7 +189,7 @@ func setup(t *testing.T) *env {
 	if err := db.Migrate(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos CASCADE`); err != nil {
+	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
@@ -1995,5 +1996,69 @@ func TestTemplateDefaultOnWeb(t *testing.T) {
 		if m := x.(map[string]any); m["source"] == "web" && m["is_default"] == true {
 			t.Fatalf("two web defaults: %v", tl)
 		}
+	}
+}
+
+func TestTrialReuse(t *testing.T) {
+	e := setup(t)
+	tr := &trial.Service{DB: e.db}
+	trialOn := func(c *client) (bool, string) {
+		me := c.must(200, "GET", "/v1/me", nil)
+		a := me["account"].(map[string]any)
+		end, _ := time.Parse(time.RFC3339Nano, a["sync_trial_ends_at"].(string))
+		r, _ := a["trial_ended_reason"].(string)
+		return end.After(time.Now()), r
+	}
+
+	// Same Gmail mailbox, new address: no trial.
+	first := e.signup("Card.Seller@gmail.com")
+	again := e.signup("cardseller+2@googlemail.com")
+	if on, _ := trialOn(first); !on {
+		t.Fatal("first account lost its trial")
+	}
+	if on, r := trialOn(again); on || r != "email" {
+		t.Fatalf("same mailbox: %v %q", on, r)
+	}
+
+	// Same PC linked to a new account: trial ends.
+	e.link(first, "sports", "HWID-SAME", "")
+	other := e.signup("someone.else@example.com")
+	e.link(other, "sports", "hwid-same", "")
+	if on, r := trialOn(other); on || r != "pc" {
+		t.Fatalf("same pc: %v %q", on, r)
+	}
+
+	// The same inventory brought into a new account: trial ends at the next sweep.
+	pc := e.link(first, "tcg", "HWID-FIRST-TCG", "")
+	var cards []map[string]any
+	for i := 0; i < 30; i++ {
+		push(t, pc, ch("card", uuid(5000+i), 0, time.Now(), map[string]any{"player_name": fmt.Sprintf("Player %d", i), "set_name": "Base Set",
+			"year": 1999, "card_number": fmt.Sprint(i), "brand": "WotC", "condition": "Raw - NM", "sport": "Pokemon"}))
+		cards = append(cards, map[string]any{"player_name": fmt.Sprintf("Player %d", i), "set_name": "Base Set", "year": 1999,
+			"card_number": fmt.Sprint(i), "brand": "WotC", "condition": "Raw - NM", "sport": "Pokemon"})
+	}
+	if _, err := tr.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	copycat := e.signup("brand.new@example.org")
+	fresh := e.signup("honest@example.org")
+	for i, f := range cards {
+		copycat.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "tcg", "import": true, "fields": f})
+		if i < 5 {
+			fresh.must(201, "POST", "/v1/inventory/cards", map[string]any{"edition": "tcg", "import": true, "fields": f})
+		}
+	}
+	n, err := tr.Sweep(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("sweep: %d %v", n, err)
+	}
+	if on, r := trialOn(copycat); on || r != "inventory" {
+		t.Fatalf("same inventory: %v %q", on, r)
+	}
+	if on, _ := trialOn(fresh); !on {
+		t.Fatal("a few shared cards ended an honest trial")
+	}
+	if on, _ := trialOn(first); !on {
+		t.Fatal("the original account lost its trial")
 	}
 }

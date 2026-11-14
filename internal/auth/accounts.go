@@ -43,6 +43,8 @@ type Account struct {
 	WebAddonUntil   *time.Time `json:"web_addon_until,omitempty"` // the add-on runs until this date
 	WebPlan         string     `json:"web_plan,omitempty"`        // "addon" (with an FCM license) or "standalone"
 	CreatedAt       time.Time  `json:"created_at"`
+	// Why the free trial ended early: "email", "pc" or "inventory" (an earlier account had it).
+	TrialEndedReason string `json:"trial_ended_reason,omitempty"`
 }
 
 // AddonActive: FireCardManager Web is paid up (alone, $39.99 / 6 months or
@@ -105,12 +107,12 @@ func validateSignup(email, password string) error {
 	return nil
 }
 
-const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at`
+const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at, coalesce(a.trial_ended_reason, '')`
 
 func scanAccount(row interface{ Scan(...any) error }, extra ...any) (Account, error) {
 	var a Account
 	var addon, until sql.NullTime
-	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt}, extra...)
+	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt, &a.TrialEndedReason}, extra...)
 	err := row.Scan(dst...)
 	if addon.Valid {
 		t := addon.Time
@@ -494,7 +496,8 @@ func (s *Service) EndWebAddon(ctx context.Context, accountID string) error {
 // ExtendTrial pushes an account's sync trial to a date (for a customer who
 // needs a few more days).
 func (s *Service) ExtendTrial(ctx context.Context, accountID string, until time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE accounts SET sync_trial_ends_at = $2, updated_at = now() WHERE id = $1`, accountID, until)
+	_, err := s.DB.ExecContext(ctx, `UPDATE accounts SET sync_trial_ends_at = $2,
+		trial_ended_reason = CASE WHEN $2 > now() THEN 'allowed' ELSE trial_ended_reason END, updated_at = now() WHERE id = $1`, accountID, until)
 	return err
 }
 

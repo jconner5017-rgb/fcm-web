@@ -15,13 +15,15 @@ export function ApproveLink({ link, email }: { link: PendingLink; email: string 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  const [trialEnded, setTrialEnded] = useState("");
 
   async function approve() {
     setBusy(true);
     setError("");
-    const r = await send("POST", "/v1/devices/link/approve", { user_code: link.user_code });
+    const r = await send<{ approved: boolean; trial_ended?: string }>("POST", "/v1/devices/link/approve", { user_code: link.user_code });
     setBusy(false);
     if (!r.ok) return setError(r.message);
+    setTrialEnded(r.data.trial_ended ?? "");
     setDone(true);
   }
 
@@ -29,7 +31,8 @@ export function ApproveLink({ link, email }: { link: PendingLink; email: string 
     return (
       <div className="mt-6 space-y-3">
         <p className="text-[18px] font-bold text-go">Approved</p>
-        <p>Go back to FireCardManager on <b>{link.device_name}</b>. It finishes linking by itself in a few seconds and starts syncing.</p>
+        <p>Go back to FireCardManager on <b>{link.device_name}</b>. It finishes linking by itself in a few seconds{trialEnded ? "" : " and starts syncing"}.</p>
+        {trialEnded && <p className="text-bad">This PC already had a FireCardManager Web free trial on another account, so this account has no free trial. Syncing starts once FireCardManager Web is added to the account.</p>}
       </div>
     );
   }

@@ -26,6 +26,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
+	"github.com/jconner5017-rgb/fcm-web/internal/trial"
 )
 
 const sessionCookie = "fcm_session"
@@ -61,6 +62,7 @@ type Server struct {
 	lister       *lister.Service
 	ebay         *ebay.Service
 	templates    *templates.Service
+	trial        *trial.Service
 	log          *slog.Logger
 	cookieSecure bool
 	sessionTTL   time.Duration
@@ -79,7 +81,7 @@ func New(o Options) *Server {
 		now = time.Now
 	}
 	return &Server{
-		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, ebay: o.Ebay, templates: &templates.Service{DB: o.DB}, log: o.Log,
+		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, ebay: o.Ebay, templates: &templates.Service{DB: o.DB}, trial: &trial.Service{DB: o.DB}, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -294,6 +296,14 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+	// A new email for a mailbox that already had a free trial gets none.
+	if reason, err := s.trial.Check(r.Context(), a.ID); err != nil {
+		s.log.Warn("trial check", "err", err)
+	} else if reason != "" {
+		if fresh, err := s.auth.ByID(r.Context(), a.ID); err == nil {
+			a = fresh
+		}
 	}
 	token, err := s.auth.StartSession(r.Context(), a.ID, clientIP(r, s.trustProxy), r.UserAgent())
 	if err != nil {
@@ -749,7 +759,12 @@ func (s *Server) handleLinkApprove(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"approved": true})
+	// A PC that already had a free trial on another account ends this one's.
+	reason, err := s.trial.Check(r.Context(), sess.Account.ID)
+	if err != nil {
+		s.log.Warn("trial check", "err", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approved": true, "trial_ended": reason})
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
