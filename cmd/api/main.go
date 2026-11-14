@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
+	"github.com/jconner5017-rgb/fcm-web/internal/billing"
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/db"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
@@ -141,6 +142,7 @@ func run(log *slog.Logger) error {
 	srv := httpapi.New(httpapi.Options{
 		FormKey: formKey, TurnstileSiteKey: os.Getenv("TURNSTILE_SITE_KEY"), TurnstileSecret: os.Getenv("TURNSTILE_SECRET"), SignupsPerIPDay: perIP,
 		BackofficeIPAllowlistOff: os.Getenv("BACKOFFICE_IP_ALLOWLIST") == "off",
+		Billing:                  &billing.Service{DB: database, WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")},
 		DB:                       database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
 		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc, Lister: listerSvc, Ebay: ebaySvc,
 		Log: log, CookieSecure: appEnv != "dev", SessionTTL: authSvc.SessionTTL,

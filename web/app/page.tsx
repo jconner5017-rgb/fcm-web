@@ -81,14 +81,14 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
           ) : me.sync_allowed ? (
             <>
               <p className="mt-2 text-[18px] font-bold">Free trial: {trialLeft} day{trialLeft === 1 ? "" : "s"} left</p>
-              <p className="mt-1 text-[13px] text-muted">Ends {shortDate(a.sync_trial_ends_at)}. Then FireCardManager Web is {ADDON_PRICE}.</p>
+              <p className="mt-1 text-[13px] text-muted">Ends {shortDate(a.sync_trial_ends_at)}. Then FireCardManager Web is {ADDON_PRICE}. <Link href="/account#plan" className="font-semibold text-fire">Buy now</Link></p>
             </>
           ) : (
             <>
               <p className="mt-2 text-[18px] font-bold text-bad">Sync is off</p>
               <p className="mt-1 text-[13px] text-muted">
                 {trialReuseText(a.trial_ended_reason) ? `No free trial here: ${trialReuseText(a.trial_ended_reason)} (one free trial per seller). ` : "The trial or plan has ended. "}
-                FireCardManager Web is {ADDON_PRICE}. Contact FireCardManager to add it.
+                FireCardManager Web is {ADDON_PRICE}. <Link href="/account#plan" className="font-semibold text-fire">Choose a plan</Link>
               </p>
             </>
           )}

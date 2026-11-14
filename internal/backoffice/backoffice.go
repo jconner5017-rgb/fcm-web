@@ -37,7 +37,7 @@ func (s *Service) Audit(ctx context.Context, actor auth.Account, action, account
 		detail = detail[:500]
 	}
 	s.DB.ExecContext(ctx, `INSERT INTO admin_audit (actor_id, actor_email, action, account_id, account_email, detail)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`, actor.ID, actor.Email, action, acct, email, detail)
+		VALUES (NULLIF($1, '')::uuid, $2, $3, $4, $5, NULLIF($6, ''))`, actor.ID, actor.Email, action, acct, email, detail)
 }
 
 type AuditEntry struct {

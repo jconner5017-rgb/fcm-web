@@ -17,6 +17,7 @@ import (
 
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
 	"github.com/jconner5017-rgb/fcm-web/internal/backoffice"
+	"github.com/jconner5017-rgb/fcm-web/internal/billing"
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
@@ -61,6 +62,9 @@ type Options struct {
 	// BackofficeIPAllowlistOff ignores the back office network allowlist
 	// (BACKOFFICE_IP_ALLOWLIST=off), for when staff lock themselves out.
 	BackofficeIPAllowlistOff bool
+
+	// Billing sells plans through firecardmanager.com/checkout.php; its webhook adds the months.
+	Billing *billing.Service
 }
 
 type Server struct {
@@ -78,6 +82,7 @@ type Server struct {
 	trial     *trial.Service
 	office    *backoffice.Service
 	ipRules   *backoffice.IPRules
+	billing   *billing.Service
 
 	formKey          []byte
 	turnstileSiteKey string
@@ -109,6 +114,7 @@ func New(o Options) *Server {
 		turnstileURL:    map[bool]string{true: o.TurnstileURL, false: "https://challenges.cloudflare.com/turnstile/v0/siteverify"}[o.TurnstileURL != ""],
 		signupsPerIPDay: o.SignupsPerIPDay, office: &backoffice.Service{DB: o.DB, Auth: o.Auth},
 		ipRules:     &backoffice.IPRules{DB: o.DB, Disabled: o.BackofficeIPAllowlistOff},
+		billing:     o.Billing,
 		authLimiter: newRateLimiter(20, time.Minute),
 		linkLimiter: newRateLimiter(10, time.Minute),
 		mailLimiter: newRateLimiter(5, 10*time.Minute),
@@ -129,6 +135,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/auth/forgot-password", s.limited(s.mailLimiter, s.handleForgotPassword))
 	mux.HandleFunc("POST /v1/auth/reset-password", s.limited(s.authLimiter, s.handleResetPassword))
 	mux.HandleFunc("GET /v1/me", requireAccount(s.handleMe))
+	mux.HandleFunc("GET /v1/billing", requireAccount(s.handleBilling))
+	mux.HandleFunc("POST /v1/billing/checkout", requireAccount(s.limited(s.authLimiter, s.handleBillingCheckout)))
+	mux.HandleFunc("POST /v1/billing/stripe-webhook", s.handleStripeWebhook)
 	mux.HandleFunc("POST /v1/me/resend-verification", requireAccount(s.limited(s.mailLimiter, s.handleResendVerification)))
 	mux.HandleFunc("POST /v1/me/password", requireAccount(s.limited(s.authLimiter, s.handleChangePassword)))
 	mux.HandleFunc("POST /v1/me/mfa/setup", requireAccount(s.handleMFASetup))

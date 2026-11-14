@@ -12,11 +12,13 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,7 @@ import (
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
+	"github.com/jconner5017-rgb/fcm-web/internal/billing"
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/db"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
@@ -189,7 +192,7 @@ func setup(t *testing.T) *env {
 	if err := db.Migrate(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed, banned_identifiers, admin_ip_rules CASCADE`); err != nil {
+	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed, banned_identifiers, admin_ip_rules, billing_payments CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
@@ -220,6 +223,7 @@ func setup(t *testing.T) *env {
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
 		AI: &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"}, Lister: e.lister,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), SessionTTL: time.Hour, WebURL: "https://app.test",
+		Billing: &billing.Service{DB: d, WebhookSecret: "whsec_test"},
 	})
 	e.srv = httptest.NewServer(s.Handler())
 	t.Cleanup(e.srv.Close)
@@ -2189,4 +2193,59 @@ func TestBackOffice(t *testing.T) {
 	owner.must(201, "POST", "/v1/admin/ip-rules", map[string]string{"cidr": "203.0.113.0/24"})
 	owner.must(200, "GET", "/v1/admin/overview", nil)
 	owner.must(409, "DELETE", fmt.Sprintf("/v1/admin/ip-rules/%v", rule["id"]), nil)
+}
+
+func TestBilling(t *testing.T) {
+	e := setup(t)
+	buyer := e.signup("buyer@example.com")
+	id := buyer.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)["id"].(string)
+	e.link(buyer, "sports", "HWID-BUY", "")
+	b := buyer.must(200, "GET", "/v1/billing", nil)
+	if b["configured"] != true || len(b["plans"].([]any)) != 4 {
+		t.Fatalf("billing: %v", b)
+	}
+	u, _ := url.Parse(buyer.must(200, "POST", "/v1/billing/checkout", map[string]string{"plan": "bundle12"})["url"].(string))
+	if u.Host != "firecardmanager.com" || u.Path != "/checkout.php" || u.Query().Get("app") != "web" || u.Query().Get("plan") != "bundle12" ||
+		u.Query().Get("account") != id || u.Query().Get("hwid") != "sports:HWID-BUY" {
+		t.Fatalf("checkout url: %s", u)
+	}
+	buyer.must(422, "POST", "/v1/billing/checkout", map[string]string{"plan": "free"})
+
+	send := func(payload string, secret string) int {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		m := hmac.New(sha256.New, []byte(secret))
+		m.Write([]byte(ts + "." + payload))
+		req, _ := http.NewRequest("POST", e.srv.URL+"/v1/billing/stripe-webhook", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		req.Header.Set("Stripe-Signature", "t="+ts+",v1="+hex.EncodeToString(m.Sum(nil)))
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	ev := func(sess, plan, fcmweb string) string {
+		return fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid","amount_total":8999,
+			"metadata":{"fcmweb":%q,"plan_key":%q,"account_id":%q,"hwid":"sports:HWID-BUY"},"customer_details":{"email":"buyer@example.com"}}}}`, sess, fcmweb, plan, id)
+	}
+	if code := send(ev("cs_1", "bundle12", "1"), "wrong"); code != 400 {
+		t.Fatalf("bad signature: %d", code)
+	}
+	if code := send(ev("cs_lic", "1yr", "0"), "whsec_test"); code != 200 {
+		t.Fatalf("desktop license sale: %d", code)
+	}
+	for i := 0; i < 2; i++ { // Stripe can deliver twice
+		if code := send(ev("cs_1", "bundle12", "1"), "whsec_test"); code != 200 {
+			t.Fatalf("paid: %d", code)
+		}
+	}
+	a := buyer.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)
+	until, _ := time.Parse(time.RFC3339Nano, a["web_addon_until"].(string))
+	if a["web_plan"] != "bundle" || until.Before(time.Now().AddDate(0, 11, 25)) || until.After(time.Now().AddDate(0, 12, 2)) {
+		t.Fatalf("plan: %v", a)
+	}
+	if p := buyer.must(200, "GET", "/v1/billing", nil)["payments"].([]any); len(p) != 1 || p[0].(map[string]any)["amount_cents"].(float64) != 8999 {
+		t.Fatalf("payments: %v", p)
+	}
 }

@@ -8,15 +8,18 @@ import { trialReuseText } from "@/lib/types";
 import { ChangePassword, TwoFactor } from "@/components/AccountForms";
 import ResendVerification from "@/components/ResendVerification";
 import CloseAccount from "@/components/CloseAccount";
+import BuyPlan from "@/components/BuyPlan";
 
 export const metadata = { title: "Account" };
 
-export default async function AccountPage() {
+export default async function AccountPage({ searchParams }: { searchParams: Promise<{ paid?: string }> }) {
+  const { paid } = await searchParams;
   const { me } = await getMe();
   if (!me) redirect("/signin?next=/account");
   const a = me.account;
   const [aiRes, mkRes, ebRes] = await Promise.all([apiGet<{ ai_key: AIKey | null }>("/v1/me/ai-key"), apiGet<{ keys: MarketKey[] }>("/v1/me/market-keys"),
     apiGet<EbayStatus>("/v1/ebay")]);
+  const billingRes = await apiGet<Parameters<typeof BuyPlan>[0] & { configured: boolean }>("/v1/billing");
   const aiKey = aiRes.data?.ai_key ?? null;
   const slabsKey = mkRes.data?.keys.find((k) => k.market === "slabs") ?? null;
   return (
@@ -33,6 +36,10 @@ export default async function AccountPage() {
         {!addonActive(a) && trialReuseText(a.trial_ended_reason) && (
           <p className="text-[13px] text-muted">No free trial on this account: {trialReuseText(a.trial_ended_reason)}. One free trial per seller.</p>
         )}
+      </section>
+      <section className="card space-y-3" id="plan">
+        <h2 className="text-[18px] font-bold">{addonActive(a) ? "Renew your plan" : "Choose a plan"}</h2>
+        <BuyPlan plans={billingRes.data?.plans ?? []} payments={billingRes.data?.payments ?? []} paid={paid === "1"} active={addonActive(a)} />
       </section>
       <section className="card" id="ai-key">
         <h2 className="text-[18px] font-bold">AI key for phone identification</h2>
