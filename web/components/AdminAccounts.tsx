@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { addonActive, send, shortDate, when } from "@/lib/client";
 import type { AdminAccount } from "@/lib/types";
@@ -10,7 +11,7 @@ const PRICES = {
 };
 const PLAN_NAMES: Record<string, string> = { web: "Web", bundle: "Bundle", addon: "Add-on", standalone: "Standalone" };
 
-export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) {
+export default function AdminAccounts({ initial, canBill }: { initial: AdminAccount[]; canBill: boolean }) {
   const [rows, setRows] = useState(initial);
   const [msg, setMsg] = useState("");
 
@@ -73,7 +74,10 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
               return (
                 <tr key={a.id}>
                   <td className="py-2 pr-3">
-                    <b>{a.email}</b>{a.is_admin && <span className="ml-1 text-fire">admin</span>}
+                    <Link href={`/admin/members/${a.id}`} className="font-bold hover:text-fire">{a.email}</Link>
+                    {a.is_admin && <span className="ml-1 text-fire">owner</span>}
+                    {a.staff_role && <span className="ml-1 text-fire">{a.staff_role}</span>}
+                    {a.status === "disabled" && <span className="ml-1 rounded-full bg-bad px-2 py-0.5 text-[11px] font-bold text-white">suspended</span>}
                     {a.web_addon_note && <span className="block text-[12px] text-muted">{a.web_addon_note}</span>}
                   </td>
                   <td className="py-2 pr-3">{shortDate(a.created_at)}</td>
@@ -85,6 +89,7 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
                   <td className="num py-2 pr-3 text-right">{a.cards.toLocaleString()}</td>
                   <td className="py-2 pr-3">{when(a.last_sync)}</td>
                   <td className="py-2 text-right whitespace-nowrap">
+                    {canBill && <>
                     <span className="mr-1 text-[12px] text-muted">Web</span>
                     <button type="button" onClick={() => addon(a, 6)} className="btn !px-3 !py-1 text-[13px]">+6 mo</button>
                     <button type="button" onClick={() => addon(a, 12)} className="btn ml-1 !px-3 !py-1 text-[13px]">+12 mo</button>
@@ -96,6 +101,8 @@ export default function AdminAccounts({ initial }: { initial: AdminAccount[] }) 
                     )}
                     <button type="button" onClick={() => trial(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">Extend trial</button>
                     {!a.is_admin && <button type="button" onClick={() => closeAccount(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px] text-bad">Close</button>}
+                    </>}
+                    {!canBill && <Link href={`/admin/members/${a.id}`} className="btn-ghost !px-3 !py-1 text-[13px]">Open</Link>}
                   </td>
                 </tr>
               );

@@ -189,7 +189,7 @@ func setup(t *testing.T) *env {
 	if err := db.Migrate(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks CASCADE`); err != nil {
+	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
@@ -2061,4 +2061,95 @@ func TestTrialReuse(t *testing.T) {
 	if on, _ := trialOn(first); !on {
 		t.Fatal("the original account lost its trial")
 	}
+}
+
+func mfaOn(t *testing.T, c *client) {
+	t.Helper()
+	sec := c.must(200, "POST", "/v1/me/mfa/setup", nil)["secret"].(string)
+	raw, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(sec)
+	c.must(200, "POST", "/v1/me/mfa/confirm", map[string]string{"code": auth.TOTP(raw, time.Now().Unix()/30)})
+}
+
+func TestBackOffice(t *testing.T) {
+	e := setup(t)
+	// Bot checks at sign-up.
+	b := e.browser()
+	if out := b.must(400, "POST", "/v1/auth/signup", map[string]string{"email": "bot@example.com", "password": "long enough pw", "website": "http://spam"}); errCode(out) != "bot_check" {
+		t.Fatal(out)
+	}
+	if out := b.must(422, "POST", "/v1/auth/signup", map[string]string{"email": "x@mailinator.com", "password": "long enough pw"}); errCode(out) != "disposable_email" {
+		t.Fatal(out)
+	}
+	if out := b.must(200, "GET", "/v1/auth/signup-check", nil); out["form_token"] != nil {
+		t.Fatalf("no form key in tests: %v", out)
+	}
+
+	owner := e.signup("owner@example.com")
+	helper := e.signup("helper@example.com")
+	member := e.signup("member@example.com")
+	memberID := member.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)["id"].(string)
+
+	// Nobody but the owner, until the owner grants a role.
+	helper.must(403, "GET", "/v1/admin/overview", nil)
+	mfaOn(t, owner)
+	owner.must(200, "GET", "/v1/admin/overview", nil)
+	owner.must(404, "PUT", "/v1/admin/staff", map[string]string{"email": "nobody@example.com", "role": "support"})
+	owner.must(204, "PUT", "/v1/admin/staff", map[string]string{"email": "Helper@example.com", "role": "support"})
+	if out := helper.must(403, "GET", "/v1/admin/overview", nil); errCode(out) != "mfa_setup_required" {
+		t.Fatal(out)
+	}
+	mfaOn(t, helper)
+	ov := helper.must(200, "GET", "/v1/admin/overview", nil)
+	if ov["accounts"].(float64) != 3 || ov["signups_1"].(float64) != 3 || ov["blocked_signups_7"].(float64) != 2 {
+		t.Fatalf("overview: %v", ov)
+	}
+	helper.must(403, "GET", "/v1/admin/staff", nil)                                                                // owners only
+	helper.must(403, "POST", "/v1/admin/accounts/"+memberID+"/trial", map[string]string{"until": "2030-01-01"}) // support: no billing
+
+	// Support: notes, suspend (signs them out), unsuspend.
+	helper.must(204, "POST", "/v1/admin/accounts/"+memberID+"/notes", map[string]string{"body": "Asked about bundle pricing."})
+	helper.must(422, "POST", "/v1/admin/accounts/"+memberID+"/suspend", map[string]string{})
+	helper.must(204, "POST", "/v1/admin/accounts/"+memberID+"/suspend", map[string]string{"reason": "Chargeback"})
+	member.must(401, "GET", "/v1/me", nil)
+	m := helper.must(200, "GET", "/v1/admin/accounts/"+memberID, nil)
+	if m["status"] != "disabled" || m["suspended_reason"] != "Chargeback" || len(m["notes"].([]any)) != 1 || len(m["audit"].([]any)) != 2 ||
+		m["signup_ip"] == "" || len(m["sign_ins"].([]any)) == 0 {
+		t.Fatalf("member: %v", m)
+	}
+	if rel := m["related"].([]any); len(rel) == 0 || rel[0].(map[string]any)["reason"] != "same sign-up network" {
+		t.Fatalf("related: %v", m["related"])
+	}
+	list := helper.must(200, "GET", "/v1/admin/accounts?filter=suspended", nil)["accounts"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("filter: %v", list)
+	}
+	helper.must(204, "POST", "/v1/admin/accounts/"+memberID+"/unsuspend", nil)
+	// Support can't touch other staff or owners.
+	ownerID := owner.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)["id"].(string)
+	helper.must(403, "POST", "/v1/admin/accounts/"+ownerID+"/suspend", map[string]string{"reason": "x"})
+
+	// Alerts: 3 accounts from one network in a week.
+	al := owner.must(200, "GET", "/v1/admin/alerts", nil)["alerts"].([]any)
+	var key string
+	for _, a := range al {
+		if a.(map[string]any)["kind"] == "signup_network" {
+			key = a.(map[string]any)["key"].(string)
+		}
+	}
+	if key == "" {
+		t.Fatalf("alerts: %v", al)
+	}
+	helper.must(204, "POST", "/v1/admin/alerts/dismiss", map[string]string{"key": key})
+	for _, a := range owner.must(200, "GET", "/v1/admin/alerts", nil)["alerts"].([]any) {
+		if a.(map[string]any)["key"] == key {
+			t.Fatal("dismissed alert still shown")
+		}
+	}
+	audit := owner.must(200, "GET", "/v1/admin/audit", nil)["entries"].([]any)
+	if len(audit) < 5 || audit[0].(map[string]any)["action"] != "dismiss_alert" {
+		t.Fatalf("audit: %v", audit)
+	}
+	// Taking the role away ends access.
+	owner.must(204, "PUT", "/v1/admin/staff", map[string]string{"email": "helper@example.com", "role": ""})
+	helper.must(403, "GET", "/v1/admin/overview", nil)
 }

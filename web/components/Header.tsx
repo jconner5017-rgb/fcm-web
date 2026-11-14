@@ -30,7 +30,7 @@ export default async function Header() {
               <Link href="/export" className="hidden hover:text-fire lg:inline">Import/Export</Link>
               <Link href="/devices" className="hover:text-fire">Linked PCs</Link>
               <Link href="/account" className="hover:text-fire">Account</Link>
-              {me.account.is_admin && <Link href="/admin" className="hover:text-fire">Admin</Link>}
+              {(me.account.is_admin || !!me.account.staff_role) && <Link href="/admin" className="hover:text-fire">Back office</Link>}
               <SignOutButton />
             </>
           ) : (

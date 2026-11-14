@@ -10,6 +10,8 @@ export type Account = {
   web_plan?: "web" | "bundle" | "addon" | "standalone" | "";
   created_at: string;
   trial_ended_reason?: "email" | "pc" | "inventory" | "allowed" | "";
+  staff_role?: "support" | "manager" | "";
+  suspended_reason?: string;
 };
 
 /** Why a free trial ended early (another account already had one), in words. */

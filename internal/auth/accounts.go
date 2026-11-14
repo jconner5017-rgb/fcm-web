@@ -45,6 +45,26 @@ type Account struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	// Why the free trial ended early: "email", "pc" or "inventory" (an earlier account had it).
 	TrialEndedReason string `json:"trial_ended_reason,omitempty"`
+	// Back office access the owner granted: "support" or "manager" ("" none).
+	// Owners (IsAdmin) have all of it.
+	StaffRole       string `json:"staff_role,omitempty"`
+	SuspendedReason string `json:"suspended_reason,omitempty"`
+}
+
+// Back office permissions: view (members, alerts, audit), act (notes,
+// suspend, sign out), billing (plans, trials, closing accounts), staff
+// (granting access - owners only).
+func (a Account) Can(perm string) bool {
+	if a.IsAdmin {
+		return true
+	}
+	switch a.StaffRole {
+	case "manager":
+		return perm == "view" || perm == "act" || perm == "billing"
+	case "support":
+		return perm == "view" || perm == "act"
+	}
+	return false
 }
 
 // AddonActive: FireCardManager Web is paid up (alone, $39.99 / 6 months or
@@ -107,12 +127,12 @@ func validateSignup(email, password string) error {
 	return nil
 }
 
-const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at, coalesce(a.trial_ended_reason, '')`
+const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at, coalesce(a.trial_ended_reason, ''), coalesce(a.staff_role, ''), coalesce(a.suspended_reason, '')`
 
 func scanAccount(row interface{ Scan(...any) error }, extra ...any) (Account, error) {
 	var a Account
 	var addon, until sql.NullTime
-	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt, &a.TrialEndedReason}, extra...)
+	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt, &a.TrialEndedReason, &a.StaffRole, &a.SuspendedReason}, extra...)
 	err := row.Scan(dst...)
 	if addon.Valid {
 		t := addon.Time
@@ -413,16 +433,25 @@ type AdminRow struct {
 	LastSync     *time.Time `json:"last_sync,omitempty"`
 }
 
-// ListAccounts returns accounts newest first, optionally filtered by email.
-func (s *Service) ListAccounts(ctx context.Context, q string, limit int) ([]AdminRow, error) {
+// ListAccounts returns accounts newest first, optionally filtered by email
+// (or "id:<uuid>" for one account) and by a back-office filter (a SQL
+// condition on accounts a, from backoffice.Filters).
+func (s *Service) ListAccounts(ctx context.Context, q string, where string, limit int) ([]AdminRow, error) {
+	q = strings.TrimSpace(q)
+	cond := `($1 = '' OR a.email ILIKE '%' || $1 || '%' OR a.signup_ip = $1)`
+	if strings.HasPrefix(where, "id:") {
+		cond, q = `a.id::text = $1`, strings.ToLower(strings.TrimPrefix(where, "id:"))
+	} else if where != "" {
+		cond += " AND " + where
+	}
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT `+accountCols+`, coalesce(a.web_addon_note, ''),
 			(SELECT count(*) FROM devices d WHERE d.account_id = a.id AND d.revoked_at IS NULL),
 			(SELECT count(*) FROM sync_cards c WHERE c.account_id = a.id AND c.deleted_at IS NULL),
 			(SELECT max(d.last_seen_at) FROM devices d WHERE d.account_id = a.id)
 		FROM accounts a
-		WHERE $1 = '' OR a.email ILIKE '%' || $1 || '%'
-		ORDER BY a.created_at DESC LIMIT $2`, strings.TrimSpace(q), limit)
+		WHERE `+cond+`
+		ORDER BY a.created_at DESC LIMIT $2`, q, limit)
 	if err != nil {
 		return nil, err
 	}

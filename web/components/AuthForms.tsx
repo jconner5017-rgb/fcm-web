@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ADDON_PRICE, safeNext, send } from "@/lib/client";
 
 function Field(props: { id: string; label: string; type?: string; value: string; onChange: (v: string) => void; error?: string; autoComplete?: string; hint?: string }) {
@@ -16,23 +16,63 @@ function Field(props: { id: string; label: string; type?: string; value: string;
   );
 }
 
+type TurnstileApi = { render: (el: HTMLElement, o: Record<string, unknown>) => string; reset: (id?: string) => void };
+
 export function SignUpForm({ next }: { next?: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
+  // Bot protection: a form token from the server, a field people never see,
+  // and Cloudflare Turnstile when it's switched on.
+  const [formToken, setFormToken] = useState("");
+  const [website, setWebsite] = useState("");
+  const [siteKey, setSiteKey] = useState("");
+  const [turnstile, setTurnstile] = useState("");
+  const box = useRef<HTMLDivElement>(null);
+  const widget = useRef<string>("");
+
+  useEffect(() => {
+    send<{ form_token?: string; turnstile_site_key?: string }>("GET", "/v1/auth/signup-check").then((r) => {
+      if (!r.ok) return;
+      setFormToken(r.data.form_token ?? "");
+      setSiteKey(r.data.turnstile_site_key ?? "");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!siteKey || !box.current) return;
+    const w = window as unknown as { turnstile?: TurnstileApi };
+    const draw = () => {
+      if (!w.turnstile || !box.current || widget.current) return;
+      widget.current = w.turnstile.render(box.current, {
+        sitekey: siteKey, theme: "auto",
+        callback: (t: string) => setTurnstile(t), "expired-callback": () => setTurnstile(""), "error-callback": () => setTurnstile(""),
+      });
+    };
+    if (w.turnstile) return draw();
+    const sc = document.createElement("script");
+    sc.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    sc.async = true;
+    sc.onload = draw;
+    document.head.appendChild(sc);
+  }, [siteKey]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
     setFields({});
-    const r = await send("POST", "/v1/auth/signup", { email, password });
+    const r = await send("POST", "/v1/auth/signup", { email, password, website, form_token: formToken, turnstile });
     setBusy(false);
     if (!r.ok) {
       setError(r.message);
       setFields(r.fields);
+      if (siteKey) {
+        (window as unknown as { turnstile?: TurnstileApi }).turnstile?.reset(widget.current);
+        setTurnstile("");
+      }
       return;
     }
     window.location.href = safeNext(next, "/");
@@ -43,8 +83,13 @@ export function SignUpForm({ next }: { next?: string }) {
       <Field id="email" label="Email" type="email" autoComplete="email" value={email} onChange={setEmail} error={fields.email} />
       <Field id="password" label="Password" type="password" autoComplete="new-password" value={password} onChange={setPassword}
         error={fields.password} hint="At least 10 characters." />
+      <div aria-hidden="true" style={{ position: "absolute", left: "-10000px", width: 1, height: 1, overflow: "hidden" }}>
+        <label htmlFor="website">Website (leave empty)</label>
+        <input id="website" name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
+      </div>
+      {siteKey && <div ref={box} className="min-h-[65px]" />}
       {error && <p role="alert" className="text-bad">{error}</p>}
-      <button type="submit" disabled={busy} className="btn w-full">{busy ? "Creating…" : "Create account"}</button>
+      <button type="submit" disabled={busy || (!!siteKey && !turnstile)} className="btn w-full">{busy ? "Creating…" : "Create account"}</button>
       <p className="text-[13px] text-muted">
         Your first 30 days of sync are free. After that, FireCardManager Web is {ADDON_PRICE}. If you use the desktop app, it keeps working either way.
       </p>

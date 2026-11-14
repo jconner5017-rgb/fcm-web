@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -124,7 +125,21 @@ func run(log *slog.Logger) error {
 	listerSvc.Ebay, listerSvc.PhotoLink = ebaySvc, export.HostedLinks(webURL)
 	listerSvc.Templates = &templates.Service{DB: database}
 
+	// Sign-up bot protection: a signed form token (key derived from the MFA
+	// key), Cloudflare Turnstile when TURNSTILE_SITE_KEY/TURNSTILE_SECRET are
+	// set, and at most SIGNUPS_PER_IP_DAY new accounts per network a day.
+	var formKey []byte
+	if k := os.Getenv("MFA_ENCRYPTION_KEY"); k != "" {
+		h := sha256.Sum256([]byte("fcm-signup-form|" + k))
+		formKey = h[:]
+	}
+	perIP, _ := strconv.Atoi(env("SIGNUPS_PER_IP_DAY", "3"))
+	if os.Getenv("TURNSTILE_SECRET") == "" {
+		log.Warn("TURNSTILE_SITE_KEY / TURNSTILE_SECRET not set: sign-ups use the other bot checks only")
+	}
+
 	srv := httpapi.New(httpapi.Options{
+		FormKey: formKey, TurnstileSiteKey: os.Getenv("TURNSTILE_SITE_KEY"), TurnstileSecret: os.Getenv("TURNSTILE_SECRET"), SignupsPerIPDay: perIP,
 		DB: database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
 		Devices: &devices.Service{DB: database}, Sync: syncSvc, Photos: photoSvc, Lister: listerSvc, Ebay: ebaySvc,
 		Log: log, CookieSecure: appEnv != "dev", SessionTTL: authSvc.SessionTTL,

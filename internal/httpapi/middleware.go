@@ -131,22 +131,6 @@ func requireAccount(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// requireAdmin allows the owner's admin accounts, and only with 2FA on.
-func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return requireAccount(func(w http.ResponseWriter, r *http.Request) {
-		sess, _ := currentSession(r)
-		if !sess.Account.IsAdmin {
-			writeError(w, http.StatusForbidden, "forbidden", "Admins only.", nil)
-			return
-		}
-		if st, err := s.mfa.Status(r.Context(), sess.Account.ID); err != nil || st == "setup_required" {
-			writeError(w, http.StatusForbidden, "mfa_setup_required", "Turn on two-factor sign-in (Account page) to use admin tools.", nil)
-			return
-		}
-		next(w, r)
-	})
-}
-
 // requireDevice checks a desktop app's bearer token.
 func (s *Server) requireDevice(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

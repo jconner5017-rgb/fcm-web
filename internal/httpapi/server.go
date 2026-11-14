@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
+	"github.com/jconner5017-rgb/fcm-web/internal/backoffice"
 	"github.com/jconner5017-rgb/fcm-web/internal/cloudsync"
 	"github.com/jconner5017-rgb/fcm-web/internal/devices"
 	"github.com/jconner5017-rgb/fcm-web/internal/ebay"
@@ -48,27 +50,41 @@ type Options struct {
 	TrustProxy   bool
 	WebURL       string // https://app.firecardmanager.com, for links in email
 	Now          func() time.Time
+
+	// Sign-up bot protection (all optional).
+	FormKey          []byte // signs the sign-up form token; nil: no token needed
+	TurnstileSiteKey string // Cloudflare Turnstile; both set: checked at sign-up
+	TurnstileSecret  string
+	TurnstileURL     string // tests
+	SignupsPerIPDay  int    // 0: no cap
 }
 
 type Server struct {
-	db           *sql.DB
-	auth         *auth.Service
-	mfa          *auth.MFA
-	mail         *email.Service
-	devices      *devices.Service
-	sync         *cloudsync.Service
-	photos       *photos.Service
-	inv          *inventory.Service
-	lister       *lister.Service
-	ebay         *ebay.Service
-	templates    *templates.Service
-	trial        *trial.Service
-	log          *slog.Logger
-	cookieSecure bool
-	sessionTTL   time.Duration
-	trustProxy   bool
-	webURL       string
-	now          func() time.Time
+	db        *sql.DB
+	auth      *auth.Service
+	mfa       *auth.MFA
+	mail      *email.Service
+	devices   *devices.Service
+	sync      *cloudsync.Service
+	photos    *photos.Service
+	inv       *inventory.Service
+	lister    *lister.Service
+	ebay      *ebay.Service
+	templates *templates.Service
+	trial     *trial.Service
+	office    *backoffice.Service
+
+	formKey          []byte
+	turnstileSiteKey string
+	turnstileSecret  string
+	turnstileURL     string
+	signupsPerIPDay  int
+	log              *slog.Logger
+	cookieSecure     bool
+	sessionTTL       time.Duration
+	trustProxy       bool
+	webURL           string
+	now              func() time.Time
 
 	authLimiter *rateLimiter // sign-in, sign-up, codes: per IP
 	linkLimiter *rateLimiter // desktop link starts: per IP
@@ -84,6 +100,9 @@ func New(o Options) *Server {
 		db: o.DB, auth: o.Auth, mfa: o.MFA, mail: o.Mail, devices: o.Devices, sync: o.Sync, photos: o.Photos, inv: &inventory.Service{DB: o.DB, Sync: o.Sync, Photos: o.Photos, Sealer: o.MFA, AI: aiClient(o.AI)}, lister: o.Lister, ebay: o.Ebay, templates: &templates.Service{DB: o.DB}, trial: &trial.Service{DB: o.DB}, log: o.Log,
 		cookieSecure: o.CookieSecure, sessionTTL: o.SessionTTL, trustProxy: o.TrustProxy,
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
+		formKey: o.FormKey, turnstileSiteKey: o.TurnstileSiteKey, turnstileSecret: o.TurnstileSecret,
+		turnstileURL:    map[bool]string{true: o.TurnstileURL, false: "https://challenges.cloudflare.com/turnstile/v0/siteverify"}[o.TurnstileURL != ""],
+		signupsPerIPDay: o.SignupsPerIPDay, office: &backoffice.Service{DB: o.DB, Auth: o.Auth},
 		authLimiter: newRateLimiter(20, time.Minute),
 		linkLimiter: newRateLimiter(10, time.Minute),
 		mailLimiter: newRateLimiter(5, 10*time.Minute),
@@ -96,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Accounts (website)
 	mux.HandleFunc("POST /v1/auth/signup", s.limited(s.authLimiter, s.handleSignup))
+	mux.HandleFunc("GET /v1/auth/signup-check", s.handleSignupCheck)
 	mux.HandleFunc("POST /v1/auth/login", s.limited(s.authLimiter, s.handleLogin))
 	mux.HandleFunc("POST /v1/auth/mfa", s.limited(s.authLimiter, s.handleLoginMFA))
 	mux.HandleFunc("POST /v1/auth/logout", s.handleLogout)
@@ -181,10 +201,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/lister/jobs/{id}/stop", requireAccount(s.handleListerStop))
 	mux.HandleFunc("POST /v1/inventory/conflicts/{id}", requireAccount(s.handleInvResolve))
 
-	mux.HandleFunc("GET /v1/admin/accounts", s.requireAdmin(s.handleAdminAccounts))
-	mux.HandleFunc("POST /v1/admin/accounts/{id}/addon", s.requireAdmin(s.handleAdminAddon))
-	mux.HandleFunc("POST /v1/admin/accounts/{id}/trial", s.requireAdmin(s.handleAdminTrial))
-	mux.HandleFunc("POST /v1/admin/accounts/{id}/close", s.requireAdmin(s.handleAdminClose))
+	// Back office: owners and the staff they grant a role (2FA required).
+	mux.HandleFunc("GET /v1/admin/overview", s.requireStaff("view", s.handleOfficeOverview))
+	mux.HandleFunc("GET /v1/admin/accounts", s.requireStaff("view", s.handleAdminAccounts))
+	mux.HandleFunc("GET /v1/admin/accounts/{id}", s.requireStaff("view", s.handleOfficeMember))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/addon", s.requireStaff("billing", s.handleAdminAddon))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/trial", s.requireStaff("billing", s.handleAdminTrial))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/close", s.requireStaff("billing", s.handleAdminClose))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/suspend", s.requireStaff("act", s.handleOfficeSuspend))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/unsuspend", s.requireStaff("act", s.handleOfficeUnsuspend))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/signout", s.requireStaff("act", s.handleOfficeSignOut))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/notes", s.requireStaff("act", s.handleOfficeNote))
+	mux.HandleFunc("GET /v1/admin/alerts", s.requireStaff("view", s.handleOfficeAlerts))
+	mux.HandleFunc("POST /v1/admin/alerts/dismiss", s.requireStaff("act", s.handleOfficeDismiss))
+	mux.HandleFunc("GET /v1/admin/audit", s.requireStaff("view", s.handleOfficeAudit))
+	mux.HandleFunc("GET /v1/admin/staff", s.requireStaff("staff", s.handleOfficeStaff))
+	mux.HandleFunc("PUT /v1/admin/staff", s.requireStaff("staff", s.handleOfficeSetStaff))
 	mux.HandleFunc("POST /v1/me/close", requireAccount(s.limited(s.authLimiter, s.handleCloseAccount)))
 
 	var h http.Handler = mux
@@ -278,10 +310,19 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email     string `json:"email"`
+		Password  string `json:"password"`
+		Website   string `json:"website"`    // hidden from people: bots fill it in
+		FormToken string `json:"form_token"` // from GET /v1/auth/signup-check
+		Turnstile string `json:"turnstile"`  // Cloudflare Turnstile response
 	}
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	ip := clientIP(r, s.trustProxy)
+	if b := s.signupGuard(r, in.Email, in.Website, in.FormToken, in.Turnstile); b != nil {
+		s.signupEvent(r.Context(), nil, strings.TrimSpace(in.Email), ip, r.UserAgent(), false, "signup_blocked:"+b.reason)
+		writeError(w, b.status, b.code, b.message, nil)
 		return
 	}
 	a, err := s.auth.Signup(r.Context(), in.Email, in.Password)
@@ -297,6 +338,8 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	s.db.ExecContext(r.Context(), `UPDATE accounts SET signup_ip = NULLIF($2, '') WHERE id = $1`, a.ID, ip)
+	s.signupEvent(r.Context(), a.ID, a.Email, ip, r.UserAgent(), true, "signup")
 	// A new email for a mailbox that already had a free trial gets none.
 	if reason, err := s.trial.Check(r.Context(), a.ID); err != nil {
 		s.log.Warn("trial check", "err", err)
@@ -570,6 +613,9 @@ func (s *Server) handleAdminClose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid", "Close your own account from the Account page.", nil)
 		return
 	}
+	if !s.canTouch(w, r, id) {
+		return
+	}
 	if err := s.auth.Close(r.Context(), id, "", false); err != nil {
 		if errors.Is(err, auth.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "Account not found.", nil)
@@ -579,6 +625,7 @@ func (s *Server) handleAdminClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("account closed by admin", "account", id, "admin", sess.Account.ID)
+	s.audit(r, "close", id, "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -872,7 +919,7 @@ func (s *Server) handleSyncPull(w http.ResponseWriter, r *http.Request) {
 // ---------------- admin ----------------
 
 func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
-	list, err := s.auth.ListAccounts(r.Context(), r.URL.Query().Get("q"), 200)
+	list, err := s.auth.ListAccounts(r.Context(), r.URL.Query().Get("q"), backoffice.Filters[r.URL.Query().Get("filter")], 200)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -901,6 +948,7 @@ func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.log.Info("web add-on ended", "account", id)
+		s.audit(r, "plan_ended", id, "")
 		writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": nil})
 		return
 	}
@@ -917,6 +965,7 @@ func (s *Server) handleAdminAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("web add-on extended", "account", id, "months", in.Months, "plan", in.Plan, "until", until)
+	s.audit(r, "plan_added", id, fmt.Sprintf("%d months %s, until %s. %s", in.Months, in.Plan, until.Format("2006-01-02"), in.Note))
 	writeJSON(w, http.StatusOK, map[string]any{"web_addon_until": until, "web_plan": map[bool]string{true: in.Plan, false: "web"}[in.Plan != ""]})
 }
 
@@ -940,6 +989,7 @@ func (s *Server) handleAdminTrial(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	s.audit(r, "trial_set", r.PathValue("id"), "until "+in.Until)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
