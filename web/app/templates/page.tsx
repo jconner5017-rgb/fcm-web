@@ -1,4 +1,4 @@
-import Link from "next/link";
+import EditionTag from "@/components/EditionTag";
 import { redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
 import { href, one, type InvSummary } from "@/lib/inventory";
@@ -25,12 +25,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
           <p className="text-[13px] text-muted">How your eBay listings look: the title and the description.</p>
         </div>
         {sum.data && sum.data.editions.length > 1 && (
-          <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
-            {sum.data.editions.map((e) => (
-              <Link key={e.edition} href={href("/templates", { edition: e.edition })}
-                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>{e.edition === "tcg" ? "TCG" : "Sports"}</Link>
-            ))}
-          </div>
+          <EditionTag edition={ed} />
         )}
       </div>
       <Templates key={ed} edition={ed} initial={res.data.templates} store={eb.data?.settings?.store_name ?? ""}

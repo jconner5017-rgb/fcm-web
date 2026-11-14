@@ -9,10 +9,11 @@ export const API_URL = withScheme(process.env.API_URL || "http://localhost:8080"
 export async function apiGet<T>(path: string): Promise<{ status: number; data: T | null; code?: string }> {
   const jar = await cookies();
   const session = jar.get("fcm_session");
+  const edition = jar.get("fcm_edition"); // the Home page's Sports | TCG choice
   const once = async () => {
     try {
       const res = await fetch(API_URL + path, {
-        headers: session ? { cookie: `fcm_session=${session.value}` } : {},
+        headers: session ? { cookie: `fcm_session=${session.value}` + (edition ? `; fcm_edition=${encodeURIComponent(edition.value)}` : "") } : {},
         cache: "no-store",
       });
       const json = await res.json().catch(() => null);

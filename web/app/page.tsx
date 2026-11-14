@@ -1,4 +1,5 @@
 import Link from "next/link";
+import EditionSwitch from "@/components/EditionSwitch";
 import { apiGet, getMe } from "@/lib/api";
 import { ADDON_PRICE, addonActive, editionName, shortDate, when } from "@/lib/client";
 import { trialReuseText, type Device } from "@/lib/types";
@@ -47,14 +48,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {sum && sum.editions.length > 1 && (
-            <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
-              {sum.editions.map((e) => (
-                <Link key={e.edition} href={href("/", { edition: e.edition })}
-                  className={`rounded-full px-3 py-1 ${e.edition === sum.edition ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>
-                  {e.edition === "tcg" ? "TCG" : "Sports"}
-                </Link>
-              ))}
-            </div>
+            <EditionSwitch editions={sum.editions.map((e) => e.edition)} current={sum.edition} />
           )}
           <Link href="/inventory" className="btn-ghost !py-1.5">Inventory</Link>
           <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>

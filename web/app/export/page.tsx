@@ -1,4 +1,5 @@
 import Link from "next/link";
+import EditionTag from "@/components/EditionTag";
 import { redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
 import { href, one, type InvSummary, type TreeSport } from "@/lib/inventory";
@@ -25,12 +26,7 @@ export default async function ExportPage({ searchParams }: { searchParams: Promi
         </div>
         <Link href="/import" className="btn !py-1.5 ml-auto">Import cards</Link>
         {sum.data.editions.length > 1 && (
-          <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
-            {sum.data.editions.map((e) => (
-              <Link key={e.edition} href={href("/export", { edition: e.edition })}
-                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>{e.edition === "tcg" ? "TCG" : "Sports"}</Link>
-            ))}
-          </div>
+          <EditionTag edition={ed} />
         )}
       </div>
       <p className="card mt-4 text-[14px] lg:hidden">Exporting works best on a computer, where you can open the file in Excel or upload it to Shopify or Whatnot.</p>

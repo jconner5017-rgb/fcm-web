@@ -1138,17 +1138,30 @@ func (s *Server) handlePublicPhoto(w http.ResponseWriter, r *http.Request) {
 // ---------------- inventory (website) ----------------
 
 // invEdition is the edition the request asked for, or the account's main one.
+// reqEdition is the edition a request asks for: ?edition=, else the
+// Sports | TCG choice from the Home page (the fcm_edition cookie), so the
+// whole site follows that one switch.
+func reqEdition(r *http.Request) string {
+	if e := r.URL.Query().Get("edition"); e != "" {
+		return e
+	}
+	if c, err := r.Cookie("fcm_edition"); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
 func (s *Server) invEdition(r *http.Request, accountID string) (string, error) {
 	eds, err := s.inv.Editions(r.Context(), accountID)
 	if err != nil {
 		return "", err
 	}
-	return inventory.PickEdition(eds, r.URL.Query().Get("edition")), nil
+	return inventory.PickEdition(eds, reqEdition(r)), nil
 }
 
 func (s *Server) handleInvSummary(w http.ResponseWriter, r *http.Request) {
 	sess, _ := currentSession(r)
-	sum, err := s.inv.Summary(r.Context(), sess.Account.ID, r.URL.Query().Get("edition"))
+	sum, err := s.inv.Summary(r.Context(), sess.Account.ID, reqEdition(r))
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -1675,7 +1688,7 @@ func (s *Server) invEditError(w http.ResponseWriter, r *http.Request, err error)
 
 func (s *Server) handleInvBoxes(w http.ResponseWriter, r *http.Request) {
 	sess, _ := currentSession(r)
-	boxes, err := s.inv.Boxes(r.Context(), sess.Account.ID, r.URL.Query().Get("edition"))
+	boxes, err := s.inv.Boxes(r.Context(), sess.Account.ID, reqEdition(r))
 	if err != nil {
 		s.internalError(w, r, err)
 		return
