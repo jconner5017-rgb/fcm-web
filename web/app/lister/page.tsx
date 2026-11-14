@@ -6,7 +6,7 @@ import { when } from "@/lib/client";
 import { href, one, type InvSummary, type TreeSport } from "@/lib/inventory";
 import BulkLister from "@/components/lister/BulkLister";
 import type { Profile } from "@/components/EbaySettings";
-import type { Run } from "@/components/lister/RunProgress";
+import { marketName, type Run } from "@/components/lister/RunProgress";
 
 export const metadata = { title: "Bulk Lister" };
 
@@ -33,7 +33,7 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[26px] font-bold">Bulk Lister</h1>
-          <p className="text-[14px] text-muted">Put many cards up for sale at once. For Shopify, Whatnot and CSV files, use Import/Export on a computer.</p>
+          <p className="text-[14px] text-muted">List the cards you sent from the Card Editor on eBay, Slabs &amp; Singles or both, or export them for Shopify or Whatnot.</p>
         </div>
         {sum.data && sum.data.editions.length > 1 && (
           <EditionTag edition={ed} />
@@ -43,7 +43,7 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
         <p className="card mt-5">Listing from the website needs the FireCardManager Web add-on (your free trial has ended).</p>
       ) : (
         <div className="mt-5">
-          <BulkLister key={ed} edition={ed} sports={tree.data?.sports ?? []} hasKey={hasKey} ebay={ebay} initialIds={ids} />
+          <BulkLister key={ed} edition={ed} hasKey={hasKey} ebay={ebay} initialIds={ids} />
         </div>
       )}
       {(runs.data?.jobs.length ?? 0) > 0 && (
@@ -53,7 +53,7 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
             {runs.data!.jobs.map((j) => (
               <li key={j.id}>
                 <Link href={`/lister/runs/${j.id}`} className="flex flex-wrap justify-between gap-2 px-3 py-2 hover:bg-wash">
-                  <span>Slabs &amp; Singles · {when(j.created_at)}</span>
+                  <span>{marketName(j.market)} · {when(j.created_at)}</span>
                   <span className="num text-muted">
                     {j.counts.done} listed · {j.counts.problems} not listed{j.counts.pending ? ` · ${j.counts.pending} waiting` : ""}
                   </span>

@@ -221,6 +221,22 @@ type Options struct {
 	DeclinePercent      *int     `json:"decline_percent"`
 	ShippingProfile     string   `json:"shipping_profile,omitempty"` // eBay: which shipping profile (id)
 	Template            string   `json:"template,omitempty"`         // eBay: which listing template (id; "" the default)
+
+	// eBay run choices, as FireCardManager's Bulk Lister has them.
+	Returns       string     `json:"returns,omitempty"`        // return option code (ReturnOptions); "" = Account > eBay setting
+	CategoryID    string     `json:"category_id,omitempty"`    // eBay category override ("" = by sport)
+	FallbackPrice *float64   `json:"fallback_price,omitempty"` // Sale Price for cards with none
+	ReservePrice  *float64   `json:"reserve_price,omitempty"`  // auction reserve for cards with none
+	OfferDollars  bool       `json:"offer_dollars,omitempty"`  // offer thresholds in $ instead of %
+	AcceptAmount  *float64   `json:"accept_amount,omitempty"`
+	DeclineAmount *float64   `json:"decline_amount,omitempty"`
+	StartAt       *time.Time `json:"start_at,omitempty"` // scheduled start (eBay)
+
+	// Slabs & Singles: listing template for title and description ("" = the
+	// site's standard description).
+	SlabsTemplate string `json:"slabs_template,omitempty"`
+	// Slabs are the Slabs & Singles choices when one run lists on both.
+	Slabs *Options `json:"slabs,omitempty"`
 }
 
 // Ship are the seller's package defaults from FireCardManager's settings.

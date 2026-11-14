@@ -94,7 +94,7 @@ func (s *Service) listEbay(ctx context.Context, accountID, edition, cardID strin
 	if !ok {
 		return "failed", "That shipping profile isn't there any more; pick another in the Bulk Lister."
 	}
-	pol, err := s.ebayPolicies(ctx, accountID, token, profile, st.Returns30)
+	pol, err := s.ebayPolicies(ctx, accountID, token, profile, st.Returns(o.Returns))
 	if err != nil {
 		return "failed", "Couldn't set up eBay shipping for profile \"" + profile.Name + "\": " + ebayDescribe(err)
 	}
@@ -159,10 +159,14 @@ func (s *Service) listEbay(ctx context.Context, accountID, edition, cardID strin
 	j := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 	now := time.Now()
 	at := j(now.UTC().Format("2006-01-02T15:04:05.0000000Z"))
+	fields := map[string]json.RawMessage{"status": j(status), "ebay_offer_id": j(offerID), "ebay_listing_id": j(listingID),
+		"ebay_listing_url": j("https://www.ebay.com/itm/" + listingID), "updated_at": at}
+	if !o.Auction && (c.SalePrice == nil || *c.SalePrice <= 0) && o.FallbackPrice != nil {
+		fields["sale_price"] = j(*o.FallbackPrice) // the run's default price is now the card's
+	}
 	res, err := s.Sync.Push(ctx, cloudsync.Device{AccountID: accountID, Edition: edition}, []cloudsync.Change{{
 		Entity: "card", ID: cardID, BaseVersion: version, EditedAt: now,
-		Fields: map[string]json.RawMessage{"status": j(status), "ebay_offer_id": j(offerID), "ebay_listing_id": j(listingID),
-			"ebay_listing_url": j("https://www.ebay.com/itm/" + listingID), "updated_at": at},
+		Fields: fields,
 	}})
 	if err != nil || len(res) == 0 || res[0].Status == "rejected" {
 		return "failed", "Listed on eBay (" + listingID + "), but the card couldn't be updated here."
@@ -253,7 +257,7 @@ func (s *Service) PriceEbay(ctx context.Context, accountID, cardID string, price
 
 type polKey struct {
 	account, profile string
-	returns          bool
+	returns          string
 	shipping         string // the profile's policy name parts, so an edited profile gets a new policy
 }
 
@@ -264,16 +268,16 @@ type polEntry struct {
 
 // ebayPolicies finds or makes the run's eBay policies; remembered for 15
 // minutes so a run of many cards checks eBay once.
-func (s *Service) ebayPolicies(ctx context.Context, accountID, token string, p ebay.Profile, returns30 bool) (ebay.Policies, error) {
-	k := polKey{accountID, p.ID, returns30, fmt.Sprintf("%s|%s|%s|%.2f|%.2f|%d", p.Name, p.ServiceCode, p.Cost, p.FlatAmount, p.WeightOz, p.HandlingDays)}
+func (s *Service) ebayPolicies(ctx context.Context, accountID, token string, p ebay.Profile, ret ebay.ReturnOption) (ebay.Policies, error) {
+	k := polKey{accountID, p.ID, ret.Name, fmt.Sprintf("%s|%s|%s|%.2f|%.2f|%d", p.Name, p.ServiceCode, p.Cost, p.FlatAmount, p.WeightOz, p.HandlingDays)}
 	if v, ok := s.polCache.Load(k); ok && time.Since(v.(polEntry).at) < 15*time.Minute {
 		return v.(polEntry).pol, nil
 	}
-	ship, pay, ret, err := s.Ebay.ResolvePolicies(ctx, token, p, returns30)
+	ship, pay, retID, err := s.Ebay.ResolvePolicies(ctx, token, p, ret)
 	if err != nil {
 		return ebay.Policies{}, err
 	}
-	pol := ebay.Policies{Shipping: ship, Payment: pay, Return: ret}
+	pol := ebay.Policies{Shipping: ship, Payment: pay, Return: retID}
 	s.polCache.Store(k, polEntry{pol, time.Now()})
 	return pol, nil
 }

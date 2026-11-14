@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { apiGet, getMe } from "@/lib/api";
-import RunProgress, { type Run } from "@/components/lister/RunProgress";
+import RunProgress, { marketName, type Run } from "@/components/lister/RunProgress";
 
 export const metadata = { title: "Listing run" };
 
@@ -15,7 +15,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   return (
     <div className="mx-auto mt-6 max-w-[760px]">
       <Link href="/lister" className="text-[14px] font-semibold text-muted hover:text-fire">&larr; Bulk Lister</Link>
-      <h1 className="mb-4 mt-2 text-[26px] font-bold">Listing on Slabs &amp; Singles</h1>
+      <h1 className="mb-4 mt-2 text-[26px] font-bold">Listing on {marketName(r.data.market)}</h1>
       <RunProgress initial={r.data} />
     </div>
   );

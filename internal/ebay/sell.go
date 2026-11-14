@@ -354,6 +354,41 @@ func (p Profile) PackageDetails() map[string]any {
 	return d
 }
 
+// ReturnOption is a return policy choice; Name is the policy's FireCardManager name.
+type ReturnOption struct {
+	Code     string `json:"code"`
+	Label    string `json:"label"`
+	Name     string `json:"-"`
+	Accepted bool   `json:"-"`
+	Days     int    `json:"-"`
+	Payer    string `json:"-"`
+}
+
+// ReturnOptions are the desktop Bulk Lister's return choices (same policy names).
+var ReturnOptions = []ReturnOption{
+	{"NoReturns", "No Returns Accepted", "NoReturns", false, 0, ""},
+	{"14D-BuyerPays", "14 Day Returns, Buyer Pays Return Shipping", "14D-BuyerPays", true, 14, "BUYER"},
+	{"14D-FreeReturns", "14 Day Returns, Free Returns (You Pay Return Shipping)", "14D-FreeReturns", true, 14, "SELLER"},
+	{"30D-BuyerPays", "30 Day Returns, Buyer Pays Return Shipping", "30D-BuyerPays", true, 30, "BUYER"},
+	{"30D-FreeReturns", "30 Day Returns, Free Returns (You Pay Return Shipping)", "30D-FreeReturns", true, 30, "SELLER"},
+	{"60D-BuyerPays", "60 Day Returns, Buyer Pays Return Shipping", "60D-BuyerPays", true, 60, "BUYER"},
+	{"60D-FreeReturns", "60 Day Returns, Free Returns (You Pay Return Shipping)", "60D-FreeReturns", true, 60, "SELLER"},
+}
+
+// Returns picks the run's return option by code; "" uses the Account > eBay
+// setting (and the policy names the website made before).
+func (s Settings) Returns(code string) ReturnOption {
+	for _, r := range ReturnOptions {
+		if r.Code == code {
+			return r
+		}
+	}
+	if s.Returns30 {
+		return ReturnOption{"", "", "30 Day Returns", true, 30, "BUYER"}
+	}
+	return ReturnOption{"", "", "NoReturns", false, 0, ""}
+}
+
 func policyName(suffix string) string {
 	n := "FireCardManager - " + suffix
 	if len(n) > 60 {
@@ -365,7 +400,7 @@ func policyName(suffix string) string {
 // Policies for one listing run: shipping from the profile, payment and
 // returns. Each is found by its FireCardManager name, or created - the same
 // names the desktop uses, so policies it made are reused.
-func (s *Service) ResolvePolicies(ctx context.Context, token string, p Profile, returns30 bool) (shipID, payID, retID string, err error) {
+func (s *Service) ResolvePolicies(ctx context.Context, token string, p Profile, ret ReturnOption) (shipID, payID, retID string, err error) {
 	if prob := p.Problem(); prob != "" {
 		return "", "", "", fmt.Errorf("shipping profile %q: %s", p.Name, prob)
 	}
@@ -402,11 +437,10 @@ func (s *Service) ResolvePolicies(ctx context.Context, token string, p Profile, 
 		}
 	}
 	retBody := map[string]any{"marketplaceId": Marketplace, "returnsAccepted": false}
-	name = policyName("NoReturns")
-	if returns30 {
-		name = policyName("30 Day Returns")
-		retBody = map[string]any{"marketplaceId": Marketplace, "returnsAccepted": true, "returnPeriod": map[string]any{"value": 30, "unit": "DAY"},
-			"returnShippingCostPayer": "BUYER", "refundMethod": "MONEY_BACK"}
+	name = policyName(ret.Name)
+	if ret.Accepted {
+		retBody = map[string]any{"marketplaceId": Marketplace, "returnsAccepted": true, "returnPeriod": map[string]any{"value": ret.Days, "unit": "DAY"},
+			"returnShippingCostPayer": ret.Payer, "refundMethod": "MONEY_BACK"}
 	}
 	retBody["name"] = name
 	if retID = find(retList, name); retID == "" {

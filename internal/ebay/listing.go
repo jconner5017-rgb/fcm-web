@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 )
@@ -289,7 +290,7 @@ func Problems(c Card, o slabs.Options, photos int) []string {
 	if c.PlayerName == "" || strings.HasPrefix(c.PlayerName, "(unidentified") {
 		p = append(p, "not identified")
 	}
-	if !o.Auction && (c.SalePrice == nil || *c.SalePrice < 0.99) {
+	if !o.Auction && (c.SalePrice == nil || *c.SalePrice < 0.99) && (o.FallbackPrice == nil || *o.FallbackPrice < 0.99) {
 		p = append(p, "no price")
 	}
 	if o.Auction {
@@ -303,14 +304,22 @@ func Problems(c Card, o slabs.Options, photos int) []string {
 // Offer is the offer for the card's inventory item.
 func Offer(c Card, edition string, o slabs.Options, st Settings, pol Policies, description string) map[string]any {
 	price := 0.0
-	if c.SalePrice != nil {
+	if c.SalePrice != nil && *c.SalePrice > 0 {
 		price = *c.SalePrice
+	} else if o.FallbackPrice != nil {
+		price = *o.FallbackPrice
 	}
 	policies := map[string]any{"fulfillmentPolicyId": pol.Shipping, "paymentPolicyId": pol.Payment, "returnPolicyId": pol.Return}
 	pricing := map[string]any{}
 	offer := map[string]any{
 		"sku": c.Sku, "marketplaceId": Marketplace, "availableQuantity": 1, "categoryId": CategoryID(c, edition),
 		"listingDescription": description, "merchantLocationKey": st.LocationKey, "listingPolicies": policies, "pricingSummary": pricing,
+	}
+	if id := strings.TrimSpace(o.CategoryID); id != "" && strings.Trim(id, "0123456789") == "" {
+		offer["categoryId"] = id
+	}
+	if o.StartAt != nil && o.StartAt.After(time.Now()) {
+		offer["listingStartDate"] = o.StartAt.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 	if o.Auction {
 		start := 0.0
@@ -325,8 +334,12 @@ func Offer(c Card, edition string, o slabs.Options, st Settings, pol Policies, d
 		}
 		offer["format"], offer["listingDuration"] = "AUCTION", fmt.Sprintf("DAYS_%d", days)
 		pricing["price"], pricing["auctionStartPrice"] = money(start), money(start)
-		if c.ReservePrice != nil && *c.ReservePrice > start {
-			pricing["auctionReservePrice"] = money(*c.ReservePrice)
+		reserve := c.ReservePrice
+		if reserve == nil || *reserve <= 0 {
+			reserve = o.ReservePrice
+		}
+		if reserve != nil && *reserve > start {
+			pricing["auctionReservePrice"] = money(*reserve)
 		}
 		return offer
 	}
@@ -334,10 +347,17 @@ func Offer(c Card, edition string, o slabs.Options, st Settings, pol Policies, d
 	pricing["price"] = money(price)
 	if o.AllowOffers {
 		terms := map[string]any{"bestOfferEnabled": true}
-		if o.AcceptPercent != nil && *o.AcceptPercent > 0 {
+		if o.OfferDollars {
+			if o.AcceptAmount != nil && *o.AcceptAmount > 0 && *o.AcceptAmount < price {
+				terms["autoAcceptPrice"] = money(*o.AcceptAmount)
+			}
+			if o.DeclineAmount != nil && *o.DeclineAmount > 0 && *o.DeclineAmount < price {
+				terms["autoDeclinePrice"] = money(*o.DeclineAmount)
+			}
+		} else if o.AcceptPercent != nil && *o.AcceptPercent > 0 {
 			terms["autoAcceptPrice"] = money(math.Round(price*float64(*o.AcceptPercent)) / 100)
 		}
-		if o.DeclinePercent != nil && *o.DeclinePercent > 0 {
+		if !o.OfferDollars && o.DeclinePercent != nil && *o.DeclinePercent > 0 {
 			terms["autoDeclinePrice"] = money(math.Round(price*float64(*o.DeclinePercent)) / 100)
 		}
 		policies["bestOfferTerms"] = terms

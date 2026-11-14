@@ -5,6 +5,11 @@ import { useEffect, useState } from "react";
 import { send, when } from "@/lib/client";
 
 type Item = { position: number; card_id: string; name: string; status: string; message?: string };
+/** Where a run lists, in words. */
+export function marketName(m: string) {
+  return m === "ebay" ? "eBay" : m === "both" ? "eBay and Slabs & Singles" : "Slabs & Singles";
+}
+
 export type Run = { id: string; market: string; status: string; created_at: string; finished_at?: string; counts: Record<string, number>; items?: Item[] };
 
 const LOOK: Record<string, [string, string]> = {
@@ -54,10 +59,10 @@ export default function RunProgress({ initial }: { initial: Run }) {
           <div className="h-full rounded-full bg-go transition-all" style={{ width: `${items.length ? (done / items.length) * 100 : 0}%` }} />
         </div>
         <p className="num mt-2 text-[14px]">
-          <b className="text-go">{ok}</b> on Slabs &amp; Singles · <b className={problems.length ? "text-fire" : ""}>{problems.length}</b> not listed
+          <b className="text-go">{ok}</b> on {marketName(run.market)} · <b className={problems.length ? "text-fire" : ""}>{problems.length}</b> not listed
           {run.finished_at && <span className="text-muted"> · finished {when(run.finished_at)}</span>}
         </p>
-        {!running && ok > 0 && <p className="mt-1 text-[13px] text-muted">Your PC shows these as live on Slabs &amp; Singles after its next sync.</p>}
+        {!running && ok > 0 && <p className="mt-1 text-[13px] text-muted">Your PC shows these as live on {marketName(run.market)} after its next sync.</p>}
         {error && <p role="alert" className="mt-2 text-bad">{error}</p>}
       </div>
 
@@ -71,7 +76,7 @@ export default function RunProgress({ initial }: { initial: Run }) {
             <li key={i.position} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-[14px]">
               <span className={`w-16 shrink-0 text-[12px] font-bold uppercase ${color}`}>{label}</span>
               <Link href={`/inventory/cards/${i.card_id}`} className="min-w-0 flex-1 truncate font-semibold hover:text-fire">{i.name || "Card"}</Link>
-              {i.message && i.status !== "listed" && i.status !== "updated" && <span className="w-full pl-[76px] text-[12px] text-muted">{i.message}</span>}
+              {i.message && (run.market === "both" || (i.status !== "listed" && i.status !== "updated")) && <span className="w-full pl-[76px] text-[12px] text-muted">{i.message}</span>}
             </li>
           );
         })}

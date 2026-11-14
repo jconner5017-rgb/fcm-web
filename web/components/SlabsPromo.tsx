@@ -31,7 +31,7 @@ export default function SlabsPromo({ ready }: { ready: number }) {
       <div className="flex flex-wrap gap-2">
         <button type="button" className="btn-ghost !py-1.5" onClick={() => { setShow(false); try { localStorage.setItem("fcm-slabs-promo-hide", String(Date.now() + 30 * 86400000)); } catch {} }}>Not now</button>
         <a className="btn-ghost !py-1.5" href={`https://slabsnsingles.com/sell?promo=${SLABS_CODE}`} target="_blank" rel="noreferrer">Use the code</a>
-        <Link className="btn !py-1.5" href="/lister">List on Slabs &amp; Singles</Link>
+        <Link className="btn !py-1.5" href="/editor">List on Slabs &amp; Singles</Link>
       </div>
     </div>
   );

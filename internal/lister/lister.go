@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -201,6 +203,16 @@ func (s *Service) Start(ctx context.Context, accountID, edition, market, jobID s
 		if err := s.ebayReady(ctx, accountID); err != nil {
 			return Job{}, err
 		}
+	case "both":
+		if err := s.ebayReady(ctx, accountID); err != nil {
+			return Job{}, err
+		}
+		if _, _, err := s.key(ctx, accountID, "slabs"); err != nil {
+			return Job{}, err
+		}
+		if opts.Slabs == nil {
+			return Job{}, fmt.Errorf("missing Slabs & Singles options")
+		}
 	default:
 		return Job{}, fmt.Errorf("unknown marketplace")
 	}
@@ -343,9 +355,18 @@ func (s *Service) RunOnce(ctx context.Context) (bool, error) {
 	var o slabs.Options
 	_ = json.Unmarshal(opts, &o)
 	var status, msg string
-	if market == "ebay" {
+	switch market {
+	case "ebay":
 		status, msg = s.listEbay(ctx, accountID, edition, cardID, o)
-	} else {
+	case "both":
+		es, em := s.listEbay(ctx, accountID, edition, cardID, o)
+		so := o
+		if o.Slabs != nil {
+			so = *o.Slabs
+		}
+		ss, sm := s.listOne(ctx, accountID, edition, cardID, so)
+		status, msg = bothStatus(es, ss), "eBay: "+em+" Slabs & Singles: "+sm
+	default:
 		status, msg = s.listOne(ctx, accountID, edition, cardID, o)
 	}
 	_, err = s.DB.ExecContext(ctx, `UPDATE list_job_items SET status = $3, message = NULLIF($4, ''), done_at = now()
@@ -354,6 +375,19 @@ func (s *Service) RunOnce(ctx context.Context) (bool, error) {
 		time.Sleep(s.Pause)
 	}
 	return true, err
+}
+
+// bothStatus is one card's result when it went to eBay and Slabs & Singles.
+func bothStatus(a, b string) string {
+	switch {
+	case a == "failed" || b == "failed":
+		return "failed"
+	case a == "listed" || b == "listed":
+		return "listed"
+	case a == "updated" || b == "updated":
+		return "updated"
+	}
+	return "skipped"
 }
 
 // Run works through queued cards until ctx ends.
@@ -434,6 +468,29 @@ func (s *Service) listOne(ctx context.Context, accountID, edition, cardID string
 		return "skipped", "Not listed: " + strings.Join(p, ", ") + "."
 	}
 	in := slabs.Build(c, edition, photos, o, ship)
+	if o.SlabsTemplate != "" && s.Templates != nil {
+		// A listing template's title and description, as plain text (like the desktop).
+		tpl, err := s.Templates.Get(ctx, accountID, edition, o.SlabsTemplate)
+		if err != nil || tpl == nil {
+			return "failed", "That listing template isn't there any more; pick another in the Bulk Lister."
+		}
+		var ec ebay.Card
+		_ = json.Unmarshal(raw, &ec)
+		store := ""
+		if st, err := s.EbaySettings(ctx, accountID); err == nil {
+			store = st.StoreName
+		}
+		front, back := photos[0], ""
+		if len(photos) > 1 {
+			back = photos[1]
+		}
+		if title := ebay.TitleFrom(tpl.TitleTemplate, ec, edition); title != "" {
+			in.Title = title
+		}
+		if d := plainText(ebay.DescriptionFrom(tpl.DescriptionHTML, ec, edition, store, front, back)); d != "" {
+			in.Description = d
+		}
+	}
 	listing, created, err := s.Slabs.Upsert(ctx, key, in, c.Sku+"-"+fmt.Sprint(time.Now().UnixNano()))
 	if err != nil {
 		return "failed", describe(err)
@@ -455,6 +512,30 @@ func (s *Service) listOne(ctx context.Context, accountID, edition, cardID string
 		return "listed", "Listed."
 	}
 	return "updated", "Listing updated."
+}
+
+var (
+	htmlBreaks = regexp.MustCompile(`(?i)<\s*(br|/p|/div|/li|/h[1-6]|/tr)\b[^>]*>`)
+	htmlTags   = regexp.MustCompile(`(?s)<!--.*?-->|<style.*?</style>|<script.*?</script>|<[^>]*>`)
+	blankRuns  = regexp.MustCompile(`[ \t]+`)
+	lineRuns   = regexp.MustCompile(`\n\s*\n+`)
+)
+
+// plainText is a template's HTML description as text for Slabs & Singles.
+func plainText(h string) string {
+	h = htmlBreaks.ReplaceAllString(h, "\n")
+	h = html.UnescapeString(htmlTags.ReplaceAllString(h, " "))
+	h = blankRuns.ReplaceAllString(h, " ")
+	lines := strings.Split(h, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	h = strings.TrimSpace(lineRuns.ReplaceAllString(strings.Join(lines, "\n"), "\n\n"))
+	h = strings.TrimSpace(strings.TrimSuffix(h, "Provided by FireCardManager.com"))
+	if r := []rune(h); len(r) > 4000 {
+		h = string(r[:4000])
+	}
+	return h
 }
 
 func describe(err error) string {
