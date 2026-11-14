@@ -21,8 +21,9 @@ export default async function ExportPage({ searchParams }: { searchParams: Promi
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[26px] font-bold">Export</h1>
-          <p className="mt-1 text-[14px] text-muted">The same files FireCardManager makes, with your photos linked. <Link href="/import" className="font-semibold text-fire">Import cards instead</Link></p>
+          <p className="mt-1 text-[14px] text-muted">The same files FireCardManager makes, with your photos linked.</p>
         </div>
+        <Link href="/import" className="btn !py-1.5 ml-auto">Import cards</Link>
         {sum.data.editions.length > 1 && (
           <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
             {sum.data.editions.map((e) => (
