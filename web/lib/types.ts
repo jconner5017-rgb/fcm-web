@@ -11,6 +11,8 @@ export type Account = {
   created_at: string;
   trial_ended_reason?: "email" | "pc" | "inventory" | "allowed" | "";
   staff_role?: "support" | "manager" | "";
+  comp?: boolean; // free FireCardManager Web given by the owner
+  comp_note?: string;
   suspended_reason?: string;
 };
 

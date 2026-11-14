@@ -76,6 +76,7 @@ type Overview struct {
 	Accounts        int `json:"accounts"`
 	OnTrial         int `json:"on_trial"`
 	Paid            int `json:"paid"`
+	Free            int `json:"free"`
 	Bundle          int `json:"bundle"`
 	Off             int `json:"off"`
 	Suspended       int `json:"suspended"`
@@ -97,10 +98,11 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	var o Overview
 	err := s.DB.QueryRowContext(ctx, `SELECT
 			count(*),
-			count(*) FILTER (WHERE status = 'active' AND web_addon_until IS NULL AND sync_trial_ends_at > now()),
+			count(*) FILTER (WHERE status = 'active' AND web_addon_until IS NULL AND comp_at IS NULL AND NOT is_admin AND sync_trial_ends_at > now()),
 			count(*) FILTER (WHERE web_addon_until > now()),
+			count(*) FILTER (WHERE comp_at IS NOT NULL OR is_admin),
 			count(*) FILTER (WHERE web_addon_until > now() AND web_plan = 'bundle'),
-			count(*) FILTER (WHERE status = 'active' AND coalesce(web_addon_until < now(), true) AND sync_trial_ends_at <= now() AND NOT is_admin),
+			count(*) FILTER (WHERE status = 'active' AND coalesce(web_addon_until < now(), true) AND sync_trial_ends_at <= now() AND NOT is_admin AND comp_at IS NULL),
 			count(*) FILTER (WHERE status = 'disabled' AND closing_at IS NULL),
 			count(*) FILTER (WHERE closing_at IS NOT NULL),
 			count(*) FILTER (WHERE created_at > now() - interval '1 day'),
@@ -108,7 +110,7 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 			count(*) FILTER (WHERE created_at > now() - interval '30 days'),
 			count(*) FILTER (WHERE trial_ended_reason IN ('email', 'pc', 'inventory') AND updated_at > now() - interval '30 days'),
 			count(*) FILTER (WHERE web_addon_until BETWEEN now() AND now() + interval '14 days')
-		FROM accounts`).Scan(&o.Accounts, &o.OnTrial, &o.Paid, &o.Bundle, &o.Off, &o.Suspended, &o.Closing,
+		FROM accounts`).Scan(&o.Accounts, &o.OnTrial, &o.Paid, &o.Free, &o.Bundle, &o.Off, &o.Suspended, &o.Closing,
 		&o.Signups1, &o.Signups7, &o.Signups30, &o.TrialsReused30, &o.ExpiringIn14)
 	if err != nil {
 		return o, err
@@ -134,14 +136,15 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 // Filters for the member list.
 var Filters = map[string]string{
 	"":           "",
-	"trial":      `a.status = 'active' AND a.web_addon_until IS NULL AND a.sync_trial_ends_at > now()`,
+	"trial":      `a.status = 'active' AND a.web_addon_until IS NULL AND a.comp_at IS NULL AND NOT a.is_admin AND a.sync_trial_ends_at > now()`,
 	"paid":       `a.web_addon_until > now()`,
-	"off":        `a.status = 'active' AND coalesce(a.web_addon_until < now(), true) AND a.sync_trial_ends_at <= now() AND NOT a.is_admin`,
+	"off":        `a.status = 'active' AND coalesce(a.web_addon_until < now(), true) AND a.sync_trial_ends_at <= now() AND NOT a.is_admin AND a.comp_at IS NULL`,
 	"suspended":  `a.status = 'disabled' AND a.closing_at IS NULL`,
 	"closing":    `a.closing_at IS NOT NULL`,
 	"reused":     `a.trial_ended_reason IN ('email', 'pc', 'inventory')`,
 	"staff":      `(a.is_admin OR a.staff_role IS NOT NULL)`,
 	"banned":     `a.banned_at IS NOT NULL`,
+	"free":       `(a.comp_at IS NOT NULL OR a.is_admin)`,
 	"unverified": `a.email_verified_at IS NULL`,
 }
 
@@ -392,6 +395,31 @@ func (s *Service) AddNote(ctx context.Context, id, author, body string) error {
 	}
 	res, err := s.DB.ExecContext(ctx, `INSERT INTO admin_notes (account_id, author_email, body)
 		SELECT id, $2, $3 FROM accounts WHERE id::text = $1`, id, author, body)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- free accounts ----
+
+// SetComp gives (on) or takes away free FireCardManager Web. Owners don't
+// need it: they always have lifetime access.
+func (s *Service) SetComp(ctx context.Context, id string, on bool, note string) error {
+	note = strings.TrimSpace(note)
+	if len(note) > 300 {
+		note = note[:300]
+	}
+	q := `UPDATE accounts SET comp_at = NULL, comp_note = NULL, updated_at = now() WHERE id::text = $1 AND NOT is_admin`
+	args := []any{id}
+	if on {
+		q = `UPDATE accounts SET comp_at = coalesce(comp_at, now()), comp_note = NULLIF($2, ''), updated_at = now() WHERE id::text = $1 AND NOT is_admin`
+		args = append(args, note)
+	}
+	res, err := s.DB.ExecContext(ctx, q, args...)
 	if err != nil {
 		return err
 	}

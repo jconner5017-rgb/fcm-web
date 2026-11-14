@@ -234,6 +234,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/admin/staff", s.requireStaff("staff", s.handleOfficeSetStaff))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/ban", s.requireStaff("ban", s.handleOfficeBan))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/unban", s.requireStaff("ban", s.handleOfficeUnban))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/comp", s.requireStaff("staff", s.handleOfficeComp))
 	mux.HandleFunc("GET /v1/admin/access", s.requireStaff("view", s.handleOfficeAccess))
 	mux.HandleFunc("GET /v1/admin/ip-rules", s.requireStaff("staff", s.handleIPRules))
 	mux.HandleFunc("POST /v1/admin/ip-rules", s.requireStaff("staff", s.handleIPRuleAdd))

@@ -3,7 +3,7 @@ import { apiGet, getMe } from "@/lib/api";
 import type { AdminAccount } from "@/lib/types";
 import AdminAccounts from "@/components/AdminAccounts";
 
-const FILTERS: [string, string][] = [["", "All"], ["trial", "Free trial"], ["paid", "Paid"], ["off", "Sync off"], ["reused", "Trial reused"],
+const FILTERS: [string, string][] = [["", "All"], ["trial", "Free trial"], ["paid", "Paid"], ["free", "Free"], ["off", "Sync off"], ["reused", "Trial reused"],
   ["suspended", "Suspended"], ["banned", "Banned"], ["unverified", "Email not confirmed"], ["closing", "Closing"], ["staff", "Staff"]];
 
 export default async function Members({ searchParams }: { searchParams: Promise<{ q?: string; filter?: string }> }) {
@@ -28,7 +28,7 @@ export default async function Members({ searchParams }: { searchParams: Promise<
             className={`rounded-full border px-3 py-1 ${v === filter ? "border-fire bg-fire text-white" : "border-line hover:border-fire"}`}>{label}</Link>
         ))}
       </div>
-      <AdminAccounts key={q + filter} initial={r.data?.accounts ?? []} canBill={canBill} />
+      <AdminAccounts key={q + filter} initial={r.data?.accounts ?? []} canBill={canBill} canComp={!!me?.account.is_admin} />
     </div>
   );
 }

@@ -32,16 +32,16 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
         <p><span className="text-muted">Member since:</span> {shortDate(a.created_at)}</p>
         <p>
           <span className="text-muted">Cloud sync:</span>{" "}
-          {addonActive(a) ? `paid until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
+          {a.is_admin ? "lifetime (owner)" : a.comp ? "free, no end date" : addonActive(a) ? `paid until ${shortDate(a.web_addon_until)}` : me.sync_allowed ? `free trial until ${shortDate(a.sync_trial_ends_at)}` : "off (trial or add-on ended)"}
         </p>
         {!addonActive(a) && trialReuseText(a.trial_ended_reason) && (
           <p className="text-[13px] text-muted">No free trial on this account: {trialReuseText(a.trial_ended_reason)}. One free trial per seller.</p>
         )}
       </section>
-      <section className="card space-y-3" id="plan">
+      {!a.is_admin && !a.comp && <section className="card space-y-3" id="plan">
         <h2 className="text-[18px] font-bold">{addonActive(a) ? "Renew your plan" : "Choose a plan"}</h2>
         <BuyPlan plans={billingRes.data?.plans ?? []} payments={billingRes.data?.payments ?? []} paid={paid === "1"} active={addonActive(a)} />
-      </section>
+      </section>}
       <section className="card space-y-2" id="seasonal">
         <h2 className="text-[18px] font-bold">Holiday looks</h2>
         <SeasonPicker />

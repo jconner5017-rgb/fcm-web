@@ -48,7 +48,7 @@ export default async function MemberPage({ params }: { params: Promise<{ id: str
 
       <section>
         <h2 className="text-[18px] font-bold">Plan</h2>
-        <AdminAccounts initial={[m]} canBill={canBill} />
+        <AdminAccounts initial={[m]} canBill={canBill} canComp={!!me?.account.is_admin} />
       </section>
 
       <div className="grid gap-6 lg:grid-cols-2">

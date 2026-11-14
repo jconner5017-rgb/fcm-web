@@ -295,3 +295,22 @@ func (s *Server) handleIPRuleRemove(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "ip_rule_removed", "", strconv.FormatInt(id, 10))
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// POST /v1/admin/accounts/{id}/comp {on, note}: owners give or take away
+// free FireCardManager Web (staff and selected sellers).
+func (s *Server) handleOfficeComp(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		On   bool   `json:"on"`
+		Note string `json:"note"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.office.SetComp(r.Context(), id, in.On, in.Note); err != nil {
+		s.officeError(w, r, err)
+		return
+	}
+	s.audit(r, map[bool]string{true: "comp_on", false: "comp_off"}[in.On], id, in.Note)
+	w.WriteHeader(http.StatusNoContent)
+}

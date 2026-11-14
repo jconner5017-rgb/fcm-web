@@ -47,7 +47,11 @@ type Account struct {
 	TrialEndedReason string `json:"trial_ended_reason,omitempty"`
 	// Back office access the owner granted: "support" or "manager" ("" none).
 	// Owners (IsAdmin) have all of it.
-	StaffRole       string `json:"staff_role,omitempty"`
+	StaffRole string `json:"staff_role,omitempty"`
+	// Comp: free FireCardManager Web the owner gave (no end date). Owners
+	// (IsAdmin) always have lifetime access.
+	Comp            bool   `json:"comp,omitempty"`
+	CompNote        string `json:"comp_note,omitempty"`
 	SuspendedReason string `json:"suspended_reason,omitempty"`
 }
 
@@ -73,10 +77,10 @@ func (a Account) AddonActive(now time.Time) bool {
 	return a.WebAddonUntil != nil && now.Before(*a.WebAddonUntil)
 }
 
-// SyncAllowed: during the 30-day trial, or while the web add-on runs.
-// Admins always may (for testing).
+// SyncAllowed: during the 30-day trial, while a paid plan runs, on a free
+// account the owner gave, and always for owners (lifetime).
 func (a Account) SyncAllowed(now time.Time) bool {
-	return a.IsAdmin || a.AddonActive(now) || now.Before(a.SyncTrialEndsAt)
+	return a.IsAdmin || a.Comp || a.AddonActive(now) || now.Before(a.SyncTrialEndsAt)
 }
 
 // Session is what a session token proves.
@@ -127,12 +131,12 @@ func validateSignup(email, password string) error {
 	return nil
 }
 
-const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at, coalesce(a.trial_ended_reason, ''), coalesce(a.staff_role, ''), coalesce(a.suspended_reason, '')`
+const accountCols = `a.id, a.email, a.email_verified_at IS NOT NULL, a.is_admin, a.status, a.sync_trial_ends_at, a.web_addon_at, a.web_addon_until, coalesce(a.web_plan, ''), a.created_at, coalesce(a.trial_ended_reason, ''), coalesce(a.staff_role, ''), coalesce(a.suspended_reason, ''), a.comp_at IS NOT NULL, coalesce(a.comp_note, '')`
 
 func scanAccount(row interface{ Scan(...any) error }, extra ...any) (Account, error) {
 	var a Account
 	var addon, until sql.NullTime
-	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt, &a.TrialEndedReason, &a.StaffRole, &a.SuspendedReason}, extra...)
+	dst := append([]any{&a.ID, &a.Email, &a.EmailVerified, &a.IsAdmin, &a.Status, &a.SyncTrialEndsAt, &addon, &until, &a.WebPlan, &a.CreatedAt, &a.TrialEndedReason, &a.StaffRole, &a.SuspendedReason, &a.Comp, &a.CompNote}, extra...)
 	err := row.Scan(dst...)
 	if addon.Valid {
 		t := addon.Time

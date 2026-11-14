@@ -67,7 +67,7 @@ type acct struct {
 func (s *Service) load(ctx context.Context, accountID string) (acct, error) {
 	var a acct
 	err := s.DB.QueryRowContext(ctx, `SELECT id, email, created_at,
-			sync_trial_ends_at > now() AND NOT is_admin AND web_addon_until IS NULL
+			sync_trial_ends_at > now() AND NOT is_admin AND web_addon_until IS NULL AND comp_at IS NULL
 		FROM accounts WHERE id = $1`, accountID).Scan(&a.id, &a.email, &a.created, &a.inTrial)
 	return a, err
 }
@@ -76,7 +76,7 @@ func (s *Service) load(ctx context.Context, accountID string) (acct, error) {
 func (s *Service) End(ctx context.Context, accountID, reason string) (bool, error) {
 	res, err := s.DB.ExecContext(ctx, `UPDATE accounts SET sync_trial_ends_at = now(), trial_ended_reason = $2, updated_at = now()
 		WHERE id = $1 AND sync_trial_ends_at > now() AND NOT is_admin AND web_addon_until IS NULL
-		  AND trial_ended_reason IS NULL`, accountID, reason) // an admin's extension ("allowed") sticks
+		  AND trial_ended_reason IS NULL AND comp_at IS NULL`, accountID, reason) // an admin's extension ("allowed") sticks
 	if err != nil {
 		return false, err
 	}

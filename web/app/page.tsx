@@ -67,7 +67,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
       <div className="grid gap-4 md:grid-cols-3">
         <div className="card">
           <p className="text-[13px] font-semibold uppercase tracking-wide text-muted">Cloud sync</p>
-          {addonActive(a) ? (
+          {a.is_admin || a.comp ? (
+            <>
+              <p className="mt-2 text-[18px] font-bold text-go">{a.is_admin ? "Lifetime access" : "Free access"}</p>
+              <p className="mt-1 text-[13px] text-muted">{a.is_admin ? "You're the owner: FireCardManager Web never runs out." : "FireCardManager Web is on the house, with no end date."}</p>
+            </>
+          ) : addonActive(a) ? (
             <>
               <p className="mt-2 text-[18px] font-bold text-go">Web add-on active</p>
               <p className="mt-1 text-[13px] text-muted">Runs until {shortDate(a.web_addon_until)}. Renew along with your FCM license.</p>

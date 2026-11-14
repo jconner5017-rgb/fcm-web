@@ -11,7 +11,7 @@ const PRICES = {
 };
 const PLAN_NAMES: Record<string, string> = { web: "Web", bundle: "Bundle", addon: "Add-on", standalone: "Standalone" };
 
-export default function AdminAccounts({ initial, canBill }: { initial: AdminAccount[]; canBill: boolean }) {
+export default function AdminAccounts({ initial, canBill, canComp = false }: { initial: AdminAccount[]; canBill: boolean; canComp?: boolean }) {
   const [rows, setRows] = useState(initial);
   const [msg, setMsg] = useState("");
 
@@ -39,6 +39,21 @@ export default function AdminAccounts({ initial, canBill }: { initial: AdminAcco
     if (!r.ok) return setMsg(r.message);
     setRows(rows.filter((x) => x.id !== a.id));
     setMsg(`${a.email} closed; its data is deleted at the next hourly cleanup.`);
+  }
+
+  async function comp(a: AdminAccount, on: boolean) {
+    let note = "";
+    if (on) {
+      const n = prompt(`Give ${a.email} free FireCardManager Web with no end date?\nNote (who they are, e.g. Staff):`, a.staff_role ? "Staff" : "");
+      if (n === null) return;
+      note = n;
+    } else if (!confirm(`Take away ${a.email}'s free access? Sync stops unless they have a paid plan or a trial running.`)) {
+      return;
+    }
+    const r = await send("POST", `/v1/admin/accounts/${a.id}/comp`, { on, note });
+    if (!r.ok) return setMsg(r.message);
+    setRows(rows.map((x) => (x.id === a.id ? { ...x, comp: on, comp_note: on ? note : undefined } : x)));
+    setMsg(on ? `${a.email} now has free FireCardManager Web.` : `Free access removed for ${a.email}.`);
   }
 
   async function trial(a: AdminAccount) {
@@ -82,7 +97,9 @@ export default function AdminAccounts({ initial, canBill }: { initial: AdminAcco
                   </td>
                   <td className="py-2 pr-3">{shortDate(a.created_at)}</td>
                   <td className="py-2 pr-3">
-                    {addonActive(a) ? <span className="font-semibold text-go">{PLAN_NAMES[a.web_plan || "addon"] ?? "Paid"} to {shortDate(a.web_addon_until)}</span>
+                    {a.is_admin ? <span className="font-semibold text-go">Lifetime (owner)</span>
+                      : a.comp ? <span className="font-semibold text-go">Free{a.comp_note ? ` (${a.comp_note})` : ""}</span>
+                      : addonActive(a) ? <span className="font-semibold text-go">{PLAN_NAMES[a.web_plan || "addon"] ?? "Paid"} to {shortDate(a.web_addon_until)}</span>
                       : trialOn ? `Trial to ${shortDate(a.sync_trial_ends_at)}` : <span className="text-bad">Off{a.trial_ended_reason && a.trial_ended_reason !== "allowed" ? ` (trial reused: ${a.trial_ended_reason === "pc" ? "same PC" : a.trial_ended_reason === "email" ? "same email" : "same inventory"})` : ""}</span>}
                   </td>
                   <td className="num py-2 pr-3 text-right">{a.devices}</td>
@@ -102,6 +119,9 @@ export default function AdminAccounts({ initial, canBill }: { initial: AdminAcco
                     <button type="button" onClick={() => trial(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px]">Extend trial</button>
                     {!a.is_admin && <button type="button" onClick={() => closeAccount(a)} className="btn-ghost ml-2 !px-3 !py-1 text-[13px] text-bad">Close</button>}
                     </>}
+                    {canComp && !a.is_admin && (
+                      <button type="button" onClick={() => comp(a, !a.comp)} className={`btn-ghost ml-2 !px-3 !py-1 text-[13px] ${a.comp ? "text-bad" : "text-go"}`}>{a.comp ? "Remove free" : "Give free"}</button>
+                    )}
                     {!canBill && <Link href={`/admin/members/${a.id}`} className="btn-ghost !px-3 !py-1 text-[13px]">Open</Link>}
                   </td>
                 </tr>

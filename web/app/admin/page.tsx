@@ -5,7 +5,7 @@ import AlertList, { type Alert } from "@/components/admin/AlertList";
 type Overview = Record<string, number>;
 
 const TILES: [string, string, string?][] = [
-  ["accounts", "Accounts"], ["on_trial", "On free trial", "trial"], ["paid", "Paid", "paid"], ["bundle", "Bundle"],
+  ["accounts", "Accounts"], ["on_trial", "On free trial", "trial"], ["paid", "Paid", "paid"], ["free", "Free (owner and given)", "free"],
   ["off", "Sync off", "off"], ["suspended", "Suspended", "suspended"], ["closing", "Closing", "closing"], ["expiring_in_14", "Plans ending in 14 days"],
   ["signups_1", "Sign-ups today"], ["signups_7", "Sign-ups, 7 days"], ["signups_30", "Sign-ups, 30 days"], ["trials_reused_30", "Trials reused, 30 days", "reused"],
   ["blocked_signups_7", "Bot sign-ups stopped, 7 days"], ["failed_sign_ins_1", "Wrong passwords today"], ["linked_pcs", "Linked PCs"], ["cards", "Cards online"],

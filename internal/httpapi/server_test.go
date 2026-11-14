@@ -2249,3 +2249,37 @@ func TestBilling(t *testing.T) {
 		t.Fatalf("payments: %v", p)
 	}
 }
+
+func TestFreeAccounts(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("owner@example.com")
+	mfaOn(t, owner)
+	friend := e.signup("friend@example.com")
+	id := friend.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)["id"].(string)
+	if _, err := e.db.Exec(`UPDATE accounts SET sync_trial_ends_at = now() - interval '1 day' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if friend.must(200, "GET", "/v1/me", nil)["sync_allowed"] != false {
+		t.Fatal("trial over: sync should be off")
+	}
+	owner.must(204, "POST", "/v1/admin/accounts/"+id+"/comp", map[string]any{"on": true, "note": "Staff"})
+	me := friend.must(200, "GET", "/v1/me", nil)
+	if me["sync_allowed"] != true || me["account"].(map[string]any)["comp"] != true {
+		t.Fatalf("free account: %v", me)
+	}
+	if ov := owner.must(200, "GET", "/v1/admin/overview", nil); ov["free"].(float64) != 2 || ov["off"].(float64) != 0 {
+		t.Fatalf("overview: %v", ov)
+	}
+	if l := owner.must(200, "GET", "/v1/admin/accounts?filter=free", nil)["accounts"].([]any); len(l) != 2 {
+		t.Fatalf("free filter: %v", l)
+	}
+	// Managers can't give free accounts; only owners.
+	owner.must(204, "PUT", "/v1/admin/staff", map[string]string{"email": "friend@example.com", "role": "manager"})
+	mfaOn(t, friend)
+	ownerID := owner.must(200, "GET", "/v1/me", nil)["account"].(map[string]any)["id"].(string)
+	friend.must(403, "POST", "/v1/admin/accounts/"+ownerID+"/comp", map[string]any{"on": true})
+	owner.must(204, "POST", "/v1/admin/accounts/"+id+"/comp", map[string]any{"on": false})
+	if friend.must(200, "GET", "/v1/me", nil)["sync_allowed"] != false {
+		t.Fatal("free access removed: sync should be off")
+	}
+}
