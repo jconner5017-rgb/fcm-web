@@ -254,13 +254,18 @@ func (s *Service) apply(ctx context.Context, d Device, c Change) (Result, error)
 			merged = true
 			if !editedAt.After(m.At) {
 				res.Lost = append(res.Lost, k)
+				if quietField[k] {
+					continue
+				}
 				if err := logConflict(ctx, tx, d, c, k, old, v, editedAt, d.ID); err != nil {
 					return Result{}, err
 				}
 				continue
 			}
-			if err := logConflict(ctx, tx, d, c, k, v, old, m.At, ""); err != nil {
-				return Result{}, err
+			if !quietField[k] {
+				if err := logConflict(ctx, tx, d, c, k, v, old, m.At, ""); err != nil {
+					return Result{}, err
+				}
 			}
 		}
 		data[k] = v
@@ -293,6 +298,10 @@ func countInventory(ctx context.Context, tx *sql.Tx, accountID string) (int, err
 		WHERE account_id = $1 AND deleted_at IS NULL AND coalesce(status, '') <> $2`, accountID, soldStatus).Scan(&n)
 	return n, err
 }
+
+// quietField are bookkeeping timestamps every save touches: the newer one
+// still wins, but there's nothing for the seller to choose, so no conflict.
+var quietField = map[string]bool{"updated_at": true, "created_at": true, "last_priced_at": true, "cardsight_checked_at": true}
 
 // logConflict records an edit that lost. lostDevice is "" when the losing
 // edit was the one already on the server (its device isn't tracked per field).
