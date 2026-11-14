@@ -23,10 +23,10 @@ export default async function EditorPage({ searchParams }: { searchParams: Promi
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <h1 className="text-[22px] font-bold">Card Editor</h1>
         {sum.data.editions.length > 1 && (
-          <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+          <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
             {sum.data.editions.map((e) => (
               <Link key={e.edition} href={href("/editor", { edition: e.edition })}
-                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-fire text-white" : "hover:text-fire"}`}>{e.edition === "tcg" ? "TCG" : "Sports"}</Link>
+                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>{e.edition === "tcg" ? "TCG" : "Sports"}</Link>
             ))}
           </div>
         )}

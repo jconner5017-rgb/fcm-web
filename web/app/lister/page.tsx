@@ -35,10 +35,10 @@ export default async function ListerPage({ searchParams }: { searchParams: Promi
           <p className="text-[14px] text-muted">Put many cards up for sale at once. For Shopify, Whatnot and CSV files, use Import/Export on a computer.</p>
         </div>
         {sum.data && sum.data.editions.length > 1 && (
-          <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+          <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
             {sum.data.editions.map((e) => (
               <Link key={e.edition} href={href("/lister", { edition: e.edition })}
-                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-fire text-white" : "hover:text-fire"}`}>
+                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>
                 {e.edition === "tcg" ? "TCG" : "Sports"}
               </Link>
             ))}

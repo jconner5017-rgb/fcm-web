@@ -75,12 +75,12 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
         <Link href="/inventory/add" className="btn !py-1.5">+ Add card</Link>
           <Link href="/inventory/upload" className="btn-ghost !py-1.5">Upload photos</Link>
         {sum.editions.length > 1 && (
-          <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+          <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
             {sum.editions.map((e) => (
               <Link
                 key={e.edition}
                 href={href("/inventory", { edition: e.edition, view: cur.view })}
-                className={`rounded-full px-3 py-1 ${e.edition === sum.edition ? "bg-fire text-white" : "hover:text-fire"}`}
+                className={`rounded-full px-3 py-1 ${e.edition === sum.edition ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}
               >
                 {e.edition === "tcg" ? "TCG" : "Sports"} <span className="num opacity-80">{e.cards.toLocaleString()}</span>
               </Link>

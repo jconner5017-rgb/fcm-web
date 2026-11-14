@@ -26,10 +26,10 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {sum.data.editions.length > 1 && (
-            <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+            <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
               {sum.data.editions.map((e) => (
                 <Link key={e.edition} href={href("/live", { edition: e.edition })}
-                  className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-fire text-white" : "hover:text-fire"}`}>{e.edition === "tcg" ? "TCG" : "Sports"}</Link>
+                  className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>{e.edition === "tcg" ? "TCG" : "Sports"}</Link>
               ))}
             </div>
           )}

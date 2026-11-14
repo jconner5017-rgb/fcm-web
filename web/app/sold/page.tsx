@@ -22,10 +22,10 @@ export default async function SoldPageView({ searchParams }: { searchParams: Pro
           <p className="text-[13px] text-muted">Tap a sale to edit it. Changes reach FireCardManager on your PC at its next sync.</p>
         </div>
         {sum.editions.length > 1 && (
-          <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+          <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
             {sum.editions.map((e) => (
               <Link key={e.edition} href={href("/sold", { edition: e.edition })}
-                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-fire text-white" : "hover:text-fire"}`}>
+                className={`rounded-full px-3 py-1 ${e.edition === ed ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>
                 {e.edition === "tcg" ? "TCG" : "Sports"}
               </Link>
             ))}

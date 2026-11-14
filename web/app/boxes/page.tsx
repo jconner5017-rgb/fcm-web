@@ -41,10 +41,10 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
         <h1 className="text-[26px] font-bold">Boxes</h1>
         <div className="flex flex-wrap items-center gap-2">
           {sum.editions.length > 1 && (
-            <div className="flex gap-1 rounded-full border border-line p-1 text-[13px] font-semibold">
+            <div className="flex gap-1 rounded-full border-2 border-go p-1 text-[13px] font-semibold">
               {sum.editions.map((e) => (
                 <Link key={e.edition} href={href("/boxes", { edition: e.edition })}
-                  className={`rounded-full px-3 py-1 ${e.edition === tree.edition ? "bg-fire text-white" : "hover:text-fire"}`}>
+                  className={`rounded-full px-3 py-1 ${e.edition === tree.edition ? "bg-go text-white shadow-sm" : "text-go hover:bg-go/10"}`}>
                   {e.edition === "tcg" ? "TCG" : "Sports"}
                 </Link>
               ))}
