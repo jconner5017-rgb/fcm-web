@@ -502,15 +502,26 @@ func (s *Service) appendSlot(ctx context.Context, accountID, box string) (string
 		}
 		fill = sizes.FillSold
 	}
-	start := last + 1
+	// After the furthest slot the box has ever used, too: a card moved out of
+	// or sold from the end doesn't hand its slot to the next card.
+	start := max(last, b.HighWater) + 1
 	if fill {
 		start = 1
 	}
 	for p := start; p <= b.Capacity; p++ {
-		if !taken[p] {
-			r, n := SlotAt(p)
-			return r, n, true, nil
+		if taken[p] {
+			continue
 		}
+		if !fill && p > b.HighWater {
+			if _, err := s.push(ctx, cloudsync.Device{AccountID: accountID, Edition: b.Edition}, cloudsync.Change{
+				Entity: "box", ID: box, BaseVersion: b.Version, EditedAt: time.Now(),
+				Fields: map[string]json.RawMessage{"high_water": json.RawMessage(fmt.Sprint(p))},
+			}); err != nil {
+				return "", 0, false, err
+			}
+		}
+		r, n := SlotAt(p)
+		return r, n, true, nil
 	}
 	return "", 0, false, nil
 }

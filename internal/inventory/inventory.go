@@ -658,11 +658,11 @@ func (s *Service) Tree(ctx context.Context, accountID, edition string) ([]TreeSp
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT coalesce(c.data->>'sport', ''), coalesce(b.id::text, ''), coalesce(b.data->>'name', ''), coalesce(c.data->>'slot_row', ''), count(*),
 			coalesce(max(CASE WHEN jsonb_typeof(c.data->'slot_number') = 'number' THEN (c.data->>'slot_number')::int END), 0),
-			coalesce(b.data->>'capacity', ''), coalesce(b.data->>'kind', ''), coalesce(b.data->>'closed_at', '')
+			coalesce(b.data->>'capacity', ''), coalesce(b.data->>'kind', ''), coalesce(b.data->>'closed_at', ''), coalesce(b.data->>'high_water', '')
 		FROM sync_cards c
 		LEFT JOIN sync_boxes b ON b.id = c.box_id AND b.account_id = c.account_id AND b.deleted_at IS NULL
 		WHERE c.account_id = $1 AND c.edition = $2 AND c.deleted_at IS NULL AND coalesce(c.status, '') <> $3
-		GROUP BY 1, 2, 3, 4, 7, 8, 9`, accountID, edition, soldStatus)
+		GROUP BY 1, 2, 3, 4, 7, 8, 9, 10`, accountID, edition, soldStatus)
 	if err != nil {
 		return nil, err
 	}
@@ -670,9 +670,9 @@ func (s *Service) Tree(ctx context.Context, accountID, edition string) ([]TreeSp
 	sports := map[string]*TreeSport{}
 	boxes := map[string]map[string]*TreeBox{}
 	for rows.Next() {
-		var sport, boxID, name, row, capText, kind, closed string
+		var sport, boxID, name, row, capText, kind, closed, high string
 		var n, maxSlot int
-		if err := rows.Scan(&sport, &boxID, &name, &row, &n, &maxSlot, &capText, &kind, &closed); err != nil {
+		if err := rows.Scan(&sport, &boxID, &name, &row, &n, &maxSlot, &capText, &kind, &closed, &high); err != nil {
 			return nil, err
 		}
 		if sport == "" {
@@ -694,6 +694,10 @@ func (s *Service) Tree(ctx context.Context, accountID, edition string) ([]TreeSp
 				}
 				if b.Kind == "" {
 					b.Kind = KindOfBoxName(name)
+				}
+				var hw int
+				if _, err := fmt.Sscan(high, &hw); err == nil && hw > b.FilledTo {
+					b.FilledTo = hw
 				}
 			}
 			switch {

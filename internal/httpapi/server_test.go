@@ -2314,11 +2314,14 @@ func TestBoxSizes(t *testing.T) {
 		return fmt.Sprintf("%s %s-%v", c["box_name"], d["slot_row"], d["slot_number"])
 	}
 	// After the last card (B10), not into the hole at A3.
-	if c := owner.must(201, "POST", "/v1/inventory/cards", f(nil)); at(c) != "Baseball B-10" {
-		t.Fatalf("first: %s", at(c))
+	first := owner.must(201, "POST", "/v1/inventory/cards", f(nil))
+	if at(first) != "Baseball B-10" {
+		t.Fatalf("first: %s", at(first))
 	}
-	// The box is full at 60: sizes picked on the website size the next box.
+	// The box is full at 60 (B-10). Deleting that last card doesn't hand its
+	// slot to the next card: it starts the next box, sized from the website's sizes.
 	owner.must(200, "PUT", "/v1/inventory/box-sizes", map[string]any{"edition": "sports", "raw": 800, "relic": 200, "slab": 20})
+	owner.must(204, "DELETE", "/v1/inventory/cards/"+first["id"].(string), nil)
 	c := owner.must(201, "POST", "/v1/inventory/cards", f(nil))
 	if at(c) != "Baseball (cont. 2) A-1" {
 		t.Fatalf("next box: %s", at(c))
@@ -2335,7 +2338,7 @@ func TestBoxSizes(t *testing.T) {
 		t.Fatalf("relic: %s", at(c))
 	}
 	// Can't shrink below the last card; can grow; closing sends new cards to a new box.
-	if code, res := owner.do("PATCH", "/v1/inventory/boxes/"+box, map[string]any{"capacity": 50}); code != 422 || !strings.Contains(fmt.Sprint(res), "row B slot 10") {
+	if code, res := owner.do("PATCH", "/v1/inventory/boxes/"+box, map[string]any{"capacity": 50}); code != 422 || !strings.Contains(fmt.Sprint(res), "row B slot 09") {
 		t.Fatalf("shrink: %d %v", code, res)
 	}
 	owner.must(200, "PATCH", "/v1/inventory/boxes/"+box, map[string]any{"capacity": 100})

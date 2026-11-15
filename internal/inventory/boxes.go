@@ -149,14 +149,15 @@ type boxState struct {
 	Capacity                int
 	HasCapacity, Closed     bool
 	Version                 int
+	HighWater               int // furthest slot ever used; new cards go after it
 }
 
 func (s *Service) box(ctx context.Context, accountID, boxID string) (boxState, error) {
 	var b boxState
-	var capText, kind, closed sql.NullString
-	err := s.DB.QueryRowContext(ctx, `SELECT id, edition, version, coalesce(data->>'name', ''), data->>'capacity', data->>'kind', data->>'closed_at'
+	var capText, kind, closed, high sql.NullString
+	err := s.DB.QueryRowContext(ctx, `SELECT id, edition, version, coalesce(data->>'name', ''), data->>'capacity', data->>'kind', data->>'closed_at', data->>'high_water'
 		FROM sync_boxes WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, boxID, accountID).
-		Scan(&b.ID, &b.Edition, &b.Version, &b.Name, &capText, &kind, &closed)
+		Scan(&b.ID, &b.Edition, &b.Version, &b.Name, &capText, &kind, &closed, &high)
 	if err != nil {
 		return b, err
 	}
@@ -174,6 +175,9 @@ func (s *Service) box(ctx context.Context, accountID, boxID string) (boxState, e
 		b.Kind = KindOfBoxName(b.Name)
 	}
 	b.Closed = closed.Valid && closed.String != ""
+	if high.Valid {
+		_, _ = fmt.Sscan(high.String, &b.HighWater)
+	}
 	return b, nil
 }
 
@@ -285,6 +289,9 @@ func (s *Service) BoxInfo(ctx context.Context, accountID, boxID string) (BoxInfo
 	out := BoxInfo{ID: b.ID, Name: b.Name, Kind: b.Kind, Capacity: b.Capacity, Older: !b.HasCapacity, FilledTo: last, Closed: b.Closed}
 	if last > 0 {
 		out.LastRow, out.LastSlot = SlotAt(last)
+	}
+	if b.HighWater > out.FilledTo {
+		out.FilledTo = b.HighWater
 	}
 	return out, nil
 }
