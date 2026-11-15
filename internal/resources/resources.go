@@ -245,9 +245,9 @@ func (s *Service) build(ctx context.Context) (Report, error) {
 				g := Gauge{Key: t.key + "_memory", Group: t.group, Label: "Memory (24 h peak)", Used: mem, Limit: memLimit, Unit: "bytes", Upgrade: t.upgrade, Peak: true}
 				if t.key == "api" {
 					apiMem = g
-					continue
+				} else {
+					renderGauges = append(renderGauges, g)
 				}
-				renderGauges = append(renderGauges, g)
 			}
 			if cpuLimit > 0 {
 				renderGauges = append(renderGauges, Gauge{Key: t.key + "_cpu", Group: t.group, Label: "CPU (24 h peak hour)", Used: cpu, Limit: cpuLimit, Unit: "cpu", Upgrade: t.upgrade, Peak: true})
