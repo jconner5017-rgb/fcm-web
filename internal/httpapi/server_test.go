@@ -50,8 +50,8 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/license"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
-	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
+	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
 	"github.com/jconner5017-rgb/fcm-web/internal/trial"
@@ -237,7 +237,7 @@ func setup(t *testing.T) *env {
 	res.SetRenderURL(renderSrv.URL)
 	s := New(Options{
 		Resources: res,
-		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key}, Ebay: e.ebaySvc,
+		DB:        d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key}, Ebay: e.ebaySvc,
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
 		AI: &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"}, Lister: e.lister,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), SessionTTL: time.Hour, WebURL: "https://app.test",

@@ -25,8 +25,8 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/export"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
-	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
+	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
 	"github.com/jconner5017-rgb/fcm-web/internal/trial"
@@ -149,7 +149,7 @@ func run(log *slog.Logger) error {
 
 	srv := httpapi.New(httpapi.Options{
 		Resources: resSvc,
-		FormKey: formKey, TurnstileSiteKey: os.Getenv("TURNSTILE_SITE_KEY"), TurnstileSecret: os.Getenv("TURNSTILE_SECRET"), SignupsPerIPDay: perIP,
+		FormKey:   formKey, TurnstileSiteKey: os.Getenv("TURNSTILE_SITE_KEY"), TurnstileSecret: os.Getenv("TURNSTILE_SECRET"), SignupsPerIPDay: perIP,
 		BackofficeIPAllowlistOff: os.Getenv("BACKOFFICE_IP_ALLOWLIST") == "off",
 		Billing:                  &billing.Service{DB: database, WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")},
 		DB:                       database, Auth: authSvc, MFA: &auth.MFA{DB: database, Key: mfaKey}, Mail: mailSvc,
