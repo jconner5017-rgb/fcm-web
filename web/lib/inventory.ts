@@ -191,7 +191,11 @@ export function one(v: string | string[] | undefined): string | undefined {
 
 // ---------------- Boxes page ----------------
 
-export type TreeBox = { id: string; name: string; label: string; cards: number; rows: { row: string; cards: number }[] };
+export type TreeBox = {
+  id: string; name: string; label: string; cards: number; rows: { row: string; cards: number }[];
+  /** Box sizes: cards it holds, the place of its last card (A-01 = 1), raw/relic/slab, closed. */
+  capacity?: number; older?: boolean; filled_to?: number; kind?: string; closed?: boolean;
+};
 export type TreeSport = { sport: string; cards: number; boxes: TreeBox[] };
 
 /** The desktop's location prefixes (LocationPrefixHelper), Sports and TCG. */
@@ -215,6 +219,7 @@ export function locationCode(c: { box_name?: string; data: CardData }): string {
   const { slot_row: row, slot_number: slot, sport } = c.data;
   if (!box || !row || !slot) return "Unassigned";
   const base = box.split(" (cont. ")[0].toLowerCase();
-  const kind = base.endsWith(" collection") ? "C" : base.endsWith(" lot box") ? "L" : "";
+  // Collection "C", Lot Box "L", slab box "S", relic box "R" (the desktop's LocationPrefixHelper).
+  const kind = base.endsWith(" collection") ? "C" : base.endsWith(" lot box") ? "L" : base.endsWith(" slabs") ? "S" : base.endsWith(" relics") ? "R" : "";
   return `${PREFIX[sport ?? ""] ?? "GN"}${kind}${boxNumber(box)}-${row}-${String(slot).padStart(2, "0")}`;
 }

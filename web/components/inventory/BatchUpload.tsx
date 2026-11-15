@@ -3,6 +3,7 @@
 import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { useRef, useState } from "react";
+import CardKindPicker, { type CardKind } from "@/components/inventory/CardKindPicker";
 import { send } from "@/lib/client";
 import { money } from "@/lib/inventory";
 import {
@@ -39,6 +40,7 @@ async function pool<T>(list: T[], size: number, fn: (t: T) => Promise<void>) {
 export default function BatchUpload({ editions, hasKey }: { editions: string[]; hasKey: boolean }) {
   const [edition, setEdition] = useState(editions[0] ?? "sports");
   const [frontFirst, setFrontFirst] = useState(true);
+  const [kind, setKind] = useState<CardKind>("raw");
   const [sortNames, setSortNames] = useState(false);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [swapped, setSwapped] = useState<Set<number>>(new Set());
@@ -145,7 +147,7 @@ export default function BatchUpload({ editions, hasKey }: { editions: string[]; 
     for (const { it, i } of todo) {
       update(i, { state: "saving", error: "" });
       const { fields } = toFields(it.form!, it.flags!, it.extra ?? {}, tcg);
-      const c = await send<Created>("POST", "/v1/inventory/cards", { edition, fields });
+      const c = await send<Created>("POST", "/v1/inventory/cards", { edition, fields: { ...fields, storage_kind: tcg && kind === "relic" ? "raw" : kind } });
       if (!c.ok) {
         update(i, { state: "save_failed", error: c.message + (Object.keys(c.fields).length ? " " + Object.values(c.fields).join(" ") : "") });
         if (c.status === 402 || c.status === 401) break;
@@ -194,6 +196,7 @@ export default function BatchUpload({ editions, hasKey }: { editions: string[]; 
                 <input type="checkbox" checked={sortNames} onChange={(e) => setSortNames(e.target.checked)} /> Sort by file name
               </label>
             </div>
+            <CardKindPicker value={kind} onChange={setKind} tcg={edition === "tcg"} many />
             <p className="text-[13px] text-muted">
               Pick the photos in order, two per card: {frontFirst ? "front then back" : "back then front"}, then the next card. On a phone, tap them in
               that order. Photos from a scanner folder are usually already in order: tick <b>Sort by file name</b>.

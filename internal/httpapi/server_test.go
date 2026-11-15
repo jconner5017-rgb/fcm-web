@@ -2283,3 +2283,82 @@ func TestFreeAccounts(t *testing.T) {
 		t.Fatal("free access removed: sync should be off")
 	}
 }
+
+// Box sizes (2026-11-15): boxes fill to their own size, slabs and relics get
+// their own boxes, closed boxes take nothing, sold slots aren't reused.
+func TestBoxSizes(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("boxes@example.com")
+	pc := e.link(owner, "sports", "HWID-BX", "")
+	box := uuid(931)
+	now := time.Now()
+	// The PC's 60-card box: A1-A50, B1-B9 used, B10 sold (gap at the end), and a hole at A3.
+	chs := []map[string]any{ch("box", box, 0, now, map[string]any{"name": "Baseball", "capacity": 60, "kind": "raw"})}
+	for i := 1; i <= 59; i++ {
+		if i == 3 {
+			continue
+		}
+		r, n := inventory.SlotAt(i)
+		chs = append(chs, ch("card", uuid(1000+i), 0, now, map[string]any{"player_name": fmt.Sprint("C", i), "status": "Ready", "box_id": box, "slot_row": r, "slot_number": n}))
+	}
+	push(t, pc, chs...)
+	f := func(extra map[string]any) map[string]any {
+		m := map[string]any{"sport": "Baseball", "player_name": "New", "brand": "Topps", "set_name": "Chrome", "card_number": "1", "condition": "Raw - NM", "year": 2024}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return map[string]any{"edition": "sports", "fields": m}
+	}
+	at := func(c map[string]any) string {
+		d := c["data"].(map[string]any)
+		return fmt.Sprintf("%s %s-%v", c["box_name"], d["slot_row"], d["slot_number"])
+	}
+	// After the last card (B10), not into the hole at A3.
+	if c := owner.must(201, "POST", "/v1/inventory/cards", f(nil)); at(c) != "Baseball B-10" {
+		t.Fatalf("first: %s", at(c))
+	}
+	// The box is full at 60: sizes picked on the website size the next box.
+	owner.must(200, "PUT", "/v1/inventory/box-sizes", map[string]any{"edition": "sports", "raw": 800, "relic": 200, "slab": 20})
+	c := owner.must(201, "POST", "/v1/inventory/cards", f(nil))
+	if at(c) != "Baseball (cont. 2) A-1" {
+		t.Fatalf("next box: %s", at(c))
+	}
+	next := c["box_id"].(string)
+	if info := owner.must(200, "GET", "/v1/inventory/boxes/"+next, nil); info["capacity"].(float64) != 800 || info["kind"] != "raw" {
+		t.Fatalf("new box info: %v", info)
+	}
+	// Slabs and relics go to their own boxes; a graded card defaults to slab.
+	if c := owner.must(201, "POST", "/v1/inventory/cards", f(map[string]any{"grading_company": "PSA", "card_grade": "10"})); at(c) != "Baseball Slabs A-1" {
+		t.Fatalf("slab: %s", at(c))
+	}
+	if c := owner.must(201, "POST", "/v1/inventory/cards", f(map[string]any{"storage_kind": "relic", "is_memorabilia": true})); at(c) != "Baseball Relics A-1" {
+		t.Fatalf("relic: %s", at(c))
+	}
+	// Can't shrink below the last card; can grow; closing sends new cards to a new box.
+	if code, res := owner.do("PATCH", "/v1/inventory/boxes/"+box, map[string]any{"capacity": 50}); code != 422 || !strings.Contains(fmt.Sprint(res), "row B slot 10") {
+		t.Fatalf("shrink: %d %v", code, res)
+	}
+	owner.must(200, "PATCH", "/v1/inventory/boxes/"+box, map[string]any{"capacity": 100})
+	owner.must(200, "PATCH", "/v1/inventory/boxes/"+next, map[string]any{"closed": true})
+	if c := owner.must(201, "POST", "/v1/inventory/cards", f(nil)); at(c) != "Baseball B-11" {
+		t.Fatalf("grown first box: %s", at(c))
+	}
+	owner.must(200, "PATCH", "/v1/inventory/boxes/"+box, map[string]any{"closed": true})
+	if c := owner.must(201, "POST", "/v1/inventory/cards", f(nil)); at(c) != "Baseball (cont. 3) A-1" {
+		t.Fatalf("both closed: %s", at(c))
+	}
+	// The PC gets the box changes.
+	pulled, _ := pull(t, pc, 0)
+	if bf, _ := pulled[box]["fields"].(map[string]any); bf == nil || bf["capacity"] != float64(100) || bf["closed_at"] == nil {
+		t.Fatalf("PC didn't get the box's new size: %v", pulled[box])
+	}
+	// With "fill sold slots" on, the hole at A3 is used.
+	owner.must(200, "PATCH", "/v1/inventory/boxes/"+box, map[string]any{"closed": false})
+	owner.must(200, "PUT", "/v1/inventory/box-sizes", map[string]any{"edition": "sports", "raw": 800, "relic": 200, "slab": 20, "fill_sold": true})
+	if c := owner.must(201, "POST", "/v1/inventory/cards", f(nil)); at(c) != "Baseball A-3" {
+		t.Fatalf("fill: %s", at(c))
+	}
+	if code, _ := owner.do("PUT", "/v1/inventory/box-sizes", map[string]any{"edition": "sports", "raw": 2}); code != 422 {
+		t.Fatalf("bad sizes: %d", code)
+	}
+}

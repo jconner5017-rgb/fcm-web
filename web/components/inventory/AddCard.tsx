@@ -3,6 +3,7 @@
 import { catName } from "@/lib/cats";
 import Link from "next/link";
 import { useRef, useState } from "react";
+import CardKindPicker, { type CardKind } from "@/components/inventory/CardKindPicker";
 import { send } from "@/lib/client";
 import { money } from "@/lib/inventory";
 import { identify as identifyCard, makeShot, SPORTS, TCG, uploadPhotos, whereText, type Created, type Shot,
@@ -21,6 +22,7 @@ export default function AddCard({ editions, hasKey }: { editions: string[]; hasK
   const [form, setForm] = useState<Form>(EMPTY);
   const [flags, setFlags] = useState(FLAGS);
   const [extra, setExtra] = useState<Extra>({});
+  const [kind, setKind] = useState<CardKind>("raw");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -50,6 +52,9 @@ export default function AddCard({ editions, hasKey }: { editions: string[]; hasK
     setForm(f.form);
     setFlags(f.flags);
     setExtra(f.extra);
+    // A graded card goes in a slab box unless the seller says otherwise.
+    const graded = String(fields.grading_company ?? "").trim() !== "" || String(fields.condition ?? "").toLowerCase().startsWith("graded");
+    setKind(graded ? "slab" : "raw");
   }
 
   async function identify() {
@@ -82,7 +87,7 @@ export default function AddCard({ editions, hasKey }: { editions: string[]; hasK
     setError("");
     setFieldErrors({});
     setProgress("Saving the card...");
-    const c = await send<Created>("POST", "/v1/inventory/cards", { edition, fields });
+    const c = await send<Created>("POST", "/v1/inventory/cards", { edition, fields: { ...fields, storage_kind: tcg && kind === "relic" ? "raw" : kind } });
     if (!c.ok) {
       setStep("review");
       setError(c.message);
@@ -196,6 +201,7 @@ export default function AddCard({ editions, hasKey }: { editions: string[]; hasK
               {notes ? <p className="mt-1 text-[13px] text-muted">AI notes: {notes}</p> : <p className="mt-1 text-[13px] text-muted">Fix anything that&apos;s wrong, then save.</p>}
             </div>
           </div>
+          <CardKindPicker value={kind} onChange={setKind} tcg={tcg} />
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-[13px] font-semibold sm:col-span-2">
               Player / name

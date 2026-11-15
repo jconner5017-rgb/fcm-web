@@ -5,6 +5,7 @@ import { apiGet, getMe } from "@/lib/api";
 import { href, one, type CardPage, type InvSummary, type Params, type TreeSport } from "@/lib/inventory";
 import BoxTree from "@/components/inventory/BoxTree";
 import BoxTile from "@/components/inventory/BoxTile";
+import { BoxSettings, BoxSizesForm, type Sizes } from "@/components/inventory/BoxSizes";
 
 export const metadata = { title: "Boxes" };
 
@@ -25,6 +26,7 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
   const sum = sumRes.data, tree = treeRes.data, page = pageRes.data;
   if (!sum || !tree || !page) return <p className="card mt-8">Your boxes couldn&apos;t be loaded just now. Refresh the page in a minute.</p>;
   cur.edition = tree.edition;
+  const sizes = (await apiGet<{ sizes: Sizes }>(href("/v1/inventory/box-sizes", { edition: tree.edition }))).data?.sizes;
 
   const sport = tree.sports.find((s) => s.sport === cur.sport);
   const box = sport?.boxes.find((b) => b.id === cur.box);
@@ -72,6 +74,15 @@ export default async function BoxesPage({ searchParams }: { searchParams: Promis
               </span>
             ))}
           </nav>
+          {sizes && (
+            <details className="card mb-3 mt-2 !p-3" open={!sizes.chosen}>
+              <summary className="cursor-pointer font-semibold">
+                Box sizes {!sizes.chosen && <span className="ml-1 rounded bg-fire px-2 py-0.5 text-[11px] text-white">Pick your box sizes</span>}
+              </summary>
+              <div className="mt-3"><BoxSizesForm edition={tree.edition} initial={sizes} /></div>
+            </details>
+          )}
+          {box && box.id !== "none" && <BoxSettings key={box.id + (box.capacity ?? 0) + String(box.closed)} box={box} />}
           <p className="num mb-3 mt-1 text-[12px] text-muted">
             {page.total.toLocaleString()} card{page.total === 1 ? "" : "s"} · in box, row and slot order · moving cards is done in FireCardManager
           </p>

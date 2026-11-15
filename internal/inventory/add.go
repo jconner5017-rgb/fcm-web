@@ -162,7 +162,7 @@ func (s *Service) Identify(ctx context.Context, accountID, edition string, front
 }
 
 // Fields a new card may start with, beyond what Edit allows.
-var createExtra = map[string]bool{"sport": true, "sale_price_percent": true, "last_priced_at": true}
+var createExtra = map[string]bool{"sport": true, "sale_price_percent": true, "last_priced_at": true, "storage_kind": true}
 
 // CreateCard adds a card made on the website. With a box but no slot, it
 // goes after the box's last card (a new row after 50), like the desktop.
@@ -226,6 +226,13 @@ func (s *Service) createCard(ctx context.Context, accountID, edition, id string,
 					continue
 				}
 				raw = timeJSON(v)
+			case "storage_kind": // raw, relic or slab: which type of box it's filed in
+				var v string
+				if json.Unmarshal(raw, &v) != nil {
+					bad[k] = "Pick raw, relic or slab."
+					continue
+				}
+				raw, _ = json.Marshal(NormalizeKind(v, edition))
 			}
 			fields[k] = raw
 			continue
@@ -304,8 +311,24 @@ func (s *Service) createCard(ctx context.Context, accountID, edition, id string,
 			return Card{}, err
 		}
 	}
+	// Which type of box: what the seller picked (raw / relic / slab), else
+	// slab for a graded card, else raw.
+	var kind string
+	if v, ok := fields["storage_kind"]; ok {
+		_ = json.Unmarshal(v, &kind)
+	} else {
+		var g string
+		if v, ok := fields["grading_company"]; ok {
+			_ = json.Unmarshal(v, &g)
+		}
+		if g = strings.ToLower(strings.TrimSpace(g)); g != "" && g != "raw" && g != "none" && g != "ungraded" {
+			kind = KindSlab
+		}
+	}
+	kind = NormalizeKind(kind, edition)
+	fields["storage_kind"], _ = json.Marshal(kind)
 	if box == "" {
-		box, row, slot, err = s.FileSpot(ctx, d, category)
+		box, row, slot, err = s.FileSpot(ctx, d, category, kind)
 		if err != nil {
 			return Card{}, err
 		}
@@ -338,10 +361,11 @@ func (s *Service) createCard(ctx context.Context, accountID, edition, id string,
 	return s.Card(ctx, accountID, id)
 }
 
-// FireCardManager's filing: a box per category named after it ("Basketball",
-// then "Basketball (cont. 2)", ...), rows A..Z of 50 slots. A new card goes
-// right after the box's last card - never into an old hole - and into the
-// next box of that category (made if needed) when the box is full.
+// FireCardManager's filing: a box per category and type named after it
+// ("Basketball", "Basketball Slabs", then "Basketball (cont. 2)", ...), rows of
+// 50 slots up to the box's size (older boxes: rows A..Z). A new card goes right
+// after the box's last card - never into an old hole - and into the next box of
+// that category and type (made if needed) when the box is full or closed.
 const (
 	SlotsPerRow   = 50
 	MaxRowsPerBox = 26
@@ -363,21 +387,27 @@ func (s *Service) lockFiling(ctx context.Context, accountID string) (func(), err
 	}, nil
 }
 
-// FileSpot picks the box, row and slot for a new card of this category,
-// creating the category's box (through sync, so PCs get it) when needed.
-func (s *Service) FileSpot(ctx context.Context, d cloudsync.Device, category string) (string, string, int, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id, data->>'name' FROM sync_boxes
+// FileSpot picks the box, row and slot for a new card of this category and
+// type (raw, relic or slab), creating the box (through sync, so PCs get it)
+// when needed: "Baseball", "Baseball Slabs", then "... (cont. 2)".
+func (s *Service) FileSpot(ctx context.Context, d cloudsync.Device, category, kind string) (string, string, int, error) {
+	kind = NormalizeKind(kind, d.Edition)
+	base := BoxBaseName(category, kind)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, data->>'name', data->>'capacity' FROM sync_boxes
 		WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL
 		  AND lower(split_part(coalesce(data->>'name', ''), ' (cont. ', 1)) = lower($3)
-		ORDER BY coalesce(data->>'created_at', ''), updated_at, id`, d.AccountID, d.Edition, category)
+		ORDER BY coalesce(data->>'created_at', ''), updated_at, id`, d.AccountID, d.Edition, base)
 	if err != nil {
 		return "", "", 0, err
 	}
-	type cand struct{ id, name string }
+	type cand struct {
+		id, name string
+		capacity sql.NullString
+	}
 	var boxes []cand
 	for rows.Next() {
 		var c cand
-		if err := rows.Scan(&c.id, &c.name); err != nil {
+		if err := rows.Scan(&c.id, &c.name, &c.capacity); err != nil {
 			rows.Close()
 			return "", "", 0, err
 		}
@@ -385,8 +415,12 @@ func (s *Service) FileSpot(ctx context.Context, d cloudsync.Device, category str
 	}
 	rows.Close()
 	names := map[string]bool{}
+	var lastCapacity string
 	for _, b := range boxes {
 		names[strings.ToLower(b.name)] = true
+		if b.capacity.String != "" {
+			lastCapacity = b.capacity.String
+		}
 		row, slot, ok, err := s.appendSlot(ctx, d.AccountID, b.id)
 		if err != nil {
 			return "", "", 0, err
@@ -395,16 +429,29 @@ func (s *Service) FileSpot(ctx context.Context, d cloudsync.Device, category str
 			return b.id, row, slot, nil
 		}
 	}
-	// No box with room: a new one, named like the desktop names them.
-	name := category
+	// No box with room: a new one, named like the desktop names them, the
+	// size the seller picked for this type (else the size of the box before it).
+	name := base
 	for n := 2; names[strings.ToLower(name)]; n++ {
-		name = fmt.Sprintf("%s (cont. %d)", category, n)
+		name = fmt.Sprintf("%s (cont. %d)", base, n)
 	}
 	id := NewID()
 	nameJSON, _ := json.Marshal(name)
-	if _, err := s.push(ctx, d, cloudsync.Change{Entity: "box", ID: id, EditedAt: time.Now(), Fields: map[string]json.RawMessage{
+	kindJSON, _ := json.Marshal(kind)
+	fields := map[string]json.RawMessage{
 		"name": nameJSON, "description": json.RawMessage("null"), "color_theme": json.RawMessage("null"), "created_at": timeJSON(time.Now()),
-	}}); err != nil {
+		"kind": kindJSON,
+	}
+	sizes, err := s.BoxSizes(ctx, d.AccountID, d.Edition)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if n := sizes.For(kind); n != nil {
+		fields["capacity"] = json.RawMessage(fmt.Sprint(*n))
+	} else if lastCapacity != "" {
+		fields["capacity"] = json.RawMessage(lastCapacity)
+	}
+	if _, err := s.push(ctx, d, cloudsync.Change{Entity: "box", ID: id, EditedAt: time.Now(), Fields: fields}); err != nil {
 		return "", "", 0, err
 	}
 	return id, RowLetter(0), 1, nil
@@ -429,41 +476,41 @@ func (s *Service) namedBoxSpot(ctx context.Context, d cloudsync.Device, name str
 	return id, row, slot, nil
 }
 
-// appendSlot is the slot after the box's last card; ok is false when the
-// box is full at the end.
+// appendSlot is the slot after the box's last card - never a slot a sold
+// card left, unless the seller turned on "fill sold slots" (the Unsorted box
+// always reuses its gaps). ok is false when the box is closed or has no room.
 func (s *Service) appendSlot(ctx context.Context, accountID, box string) (string, int, bool, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT data->>'slot_row', CASE WHEN jsonb_typeof(data->'slot_number') = 'number' THEN (data->>'slot_number')::int END
-		FROM sync_cards WHERE account_id = $1 AND box_id = $2 AND deleted_at IS NULL
-		  AND coalesce(data->>'slot_row', '') <> '' AND jsonb_typeof(data->'slot_number') = 'number'`, accountID, box)
+	b, err := s.box(ctx, accountID, box)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
 	if err != nil {
 		return "", 0, false, err
 	}
-	defer rows.Close()
-	lastRow, lastSlot := -1, 0
-	for rows.Next() {
-		var r string
-		var n int
-		if err := rows.Scan(&r, &n); err != nil {
-			return "", 0, false, err
-		}
-		i := RowIndex(r)
-		if i < 0 {
-			continue
-		}
-		if i > lastRow || (i == lastRow && n > lastSlot) {
-			lastRow, lastSlot = i, n
-		}
+	if b.Closed {
+		return "", 0, false, nil
 	}
-	if err := rows.Err(); err != nil {
+	taken, last, err := s.positions(ctx, accountID, box)
+	if err != nil {
 		return "", 0, false, err
 	}
-	switch {
-	case lastRow < 0:
-		return RowLetter(0), 1, true, nil
-	case lastSlot < SlotsPerRow:
-		return RowLetter(lastRow), lastSlot + 1, true, nil
-	case lastRow+1 < MaxRowsPerBox:
-		return RowLetter(lastRow + 1), 1, true, nil
+	fill := strings.EqualFold(strings.TrimSpace(b.Name), "unsorted")
+	if !fill {
+		sizes, err := s.BoxSizes(ctx, accountID, b.Edition)
+		if err != nil {
+			return "", 0, false, err
+		}
+		fill = sizes.FillSold
+	}
+	start := last + 1
+	if fill {
+		start = 1
+	}
+	for p := start; p <= b.Capacity; p++ {
+		if !taken[p] {
+			r, n := SlotAt(p)
+			return r, n, true, nil
+		}
 	}
 	return "", 0, false, nil
 }

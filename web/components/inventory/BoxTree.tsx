@@ -35,7 +35,13 @@ export default function BoxTree({ sports, total, cur }: { sports: TreeSport[]; t
                   <div key={b.id}>
                     <Link href={href("/boxes", base, { sport: s.sport, box: b.id })} className={row(boxOn && !cur.row, boxOn, 1)}>
                       {dot(boxOn)} {b.rows.length > 0 && <span className="text-muted" aria-hidden>{boxOn ? "▾" : "▸"}</span>}
-                      <span className="truncate">{b.label}</span> {count(b.cards)}
+                      <span className="truncate">{b.label}</span>
+                      {b.capacity ? (
+                        <span className={`num shrink-0 text-[11px] ${boxOn && !cur.row ? "" : b.closed ? "text-bad" : "text-muted"}`} title={b.closed ? "Closed: no new cards go in" : "Filled to / box size"}>
+                          {(b.filled_to ?? 0).toLocaleString()}/{b.capacity.toLocaleString()}{b.closed ? " · closed" : ""}
+                        </span>
+                      ) : null}
+                      {count(b.cards)}
                     </Link>
                     {boxOn &&
                       b.rows.map((r) => {
