@@ -50,6 +50,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/license"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
+	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
@@ -192,7 +193,7 @@ func setup(t *testing.T) *env {
 	if err := db.Migrate(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed, banned_identifiers, admin_ip_rules, billing_payments CASCADE`); err != nil {
+	if _, err := d.Exec(`TRUNCATE accounts, device_links, sync_changes, email_outbox, sync_photos, trial_claims, trial_card_marks, admin_audit, admin_dismissed, banned_identifiers, admin_ip_rules, billing_payments, resource_snapshots CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: d, bucket: &fakeBucket{objects: map[string][]byte{}}, ai: &fakeAI{}}
@@ -218,7 +219,24 @@ func setup(t *testing.T) *env {
 		AuthURL: ebaySrv.URL, APIURL: ebaySrv.URL, IDURL: ebaySrv.URL}
 	e.lister.Ebay, e.lister.PhotoLink = e.ebaySvc, export.HostedLinks("https://app.test")
 	e.lister.Templates = &templates.Service{DB: d}
+	// A stand-in for Render's API (metrics for the resource monitor).
+	renderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer rnd_test" {
+			w.WriteHeader(401)
+			return
+		}
+		val := map[string]float64{"/metrics/memory": 470e6, "/metrics/memory-limit": 512e6, "/metrics/cpu": 0.1, "/metrics/cpu-limit": 0.5}[r.URL.Path]
+		if strings.HasPrefix(r.URL.Path, "/postgres/") {
+			fmt.Fprint(w, `{"diskSizeGB": 1}`)
+			return
+		}
+		fmt.Fprintf(w, `[{"labels":[],"unit":"x","values":[{"timestamp":"2026-11-15T00:00:00Z","value":%g},{"timestamp":"2026-11-15T01:00:00Z","value":%g}]}]`, val/2, val)
+	}))
+	t.Cleanup(renderSrv.Close)
+	res := &resources.Service{DB: d, RenderKey: "rnd_test", APIID: "srv-api", WebID: "srv-web", DBID: "dpg-db", Started: time.Now()}
+	res.SetRenderURL(renderSrv.URL)
 	s := New(Options{
+		Resources: res,
 		DB: d, Auth: authSvc, MFA: &auth.MFA{DB: d, Key: key}, Ebay: e.ebaySvc,
 		Mail: &email.Service{DB: d}, Devices: &devices.Service{DB: d}, Sync: syncSvc, Photos: photoSvc,
 		AI: &identify.Client{ClaudeURL: aiSrv.URL + "/v1/messages", GeminiBase: aiSrv.URL + "/models"}, Lister: e.lister,
@@ -2363,5 +2381,41 @@ func TestBoxSizes(t *testing.T) {
 	}
 	if code, _ := owner.do("PUT", "/v1/inventory/box-sizes", map[string]any{"edition": "sports", "raw": 2}); code != 422 {
 		t.Fatalf("bad sizes: %d", code)
+	}
+}
+
+// The back office resource monitor: the site's own numbers plus Render's.
+func TestResources(t *testing.T) {
+	e := setup(t)
+	owner := e.signup("owner@example.com")
+	member := e.signup("member2@example.com")
+	member.must(403, "GET", "/v1/admin/resources", nil)
+	mfaOn(t, owner)
+	rep := owner.must(200, "GET", "/v1/admin/resources", nil)
+	if rep["render"] != "on" {
+		t.Fatalf("render: %v", rep["render"])
+	}
+	byKey := map[string]map[string]any{}
+	for _, g := range rep["gauges"].([]any) {
+		m := g.(map[string]any)
+		byKey[m["key"].(string)] = m
+	}
+	if g := byKey["db_disk"]; g == nil || g["limit"].(float64) != 1e9 || g["level"] != "ok" {
+		t.Fatalf("db disk: %v", g)
+	}
+	// 470 of 512 MB: over 85%, so high, with what to do about it.
+	if g := byKey["api_memory"]; g == nil || g["level"] != "high" || g["upgrade"] == "" {
+		t.Fatalf("api memory: %v", g)
+	}
+	if g := byKey["web_cpu"]; g == nil || g["percent"].(float64) != 20 {
+		t.Fatalf("web cpu: %v", g)
+	}
+	if byKey["photos"] == nil || rep["counts"].(map[string]any)["accounts"].(float64) < 2 {
+		t.Fatalf("photos/counts: %v", rep)
+	}
+	// It's also first on the Alerts page.
+	al := owner.must(200, "GET", "/v1/admin/alerts", nil)["alerts"].([]any)
+	if len(al) == 0 || al[0].(map[string]any)["kind"] != "resources" {
+		t.Fatalf("alerts: %v", al)
 	}
 }

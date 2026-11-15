@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jconner5017-rgb/fcm-web/internal/auth"
 	"github.com/jconner5017-rgb/fcm-web/internal/backoffice"
@@ -151,7 +153,32 @@ func (s *Server) handleOfficeAlerts(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	// Anything at 85% of its limit (database disk, memory, CPU...) goes first.
+	if s.resources != nil {
+		if rep, err := s.resources.Report(r.Context()); err == nil {
+			var top []backoffice.Alert
+			for _, g := range rep.High() {
+				top = append(top, backoffice.Alert{Key: "resources|" + g.Key, Kind: "resources", Level: "high",
+					Title:  fmt.Sprintf("%s %s is %.0f%% full", g.Group, strings.ToLower(g.Label), g.Percent),
+					Detail: g.Upgrade, At: rep.At})
+			}
+			a = append(top, a...)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"alerts": a})
+}
+
+func (s *Server) handleOfficeResources(w http.ResponseWriter, r *http.Request) {
+	if s.resources == nil {
+		writeError(w, http.StatusServiceUnavailable, "off", "The resource monitor isn't switched on.", nil)
+		return
+	}
+	rep, err := s.resources.Report(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *Server) handleOfficeDismiss(w http.ResponseWriter, r *http.Request) {

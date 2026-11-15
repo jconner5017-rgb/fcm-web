@@ -26,6 +26,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/identify"
 	"github.com/jconner5017-rgb/fcm-web/internal/inventory"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
+	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
@@ -62,6 +63,8 @@ type Options struct {
 	// BackofficeIPAllowlistOff ignores the back office network allowlist
 	// (BACKOFFICE_IP_ALLOWLIST=off), for when staff lock themselves out.
 	BackofficeIPAllowlistOff bool
+	// Resources is the back office resource monitor (nil: off).
+	Resources *resources.Service
 
 	// Billing sells plans through firecardmanager.com/checkout.php; its webhook adds the months.
 	Billing *billing.Service
@@ -81,6 +84,7 @@ type Server struct {
 	templates *templates.Service
 	trial     *trial.Service
 	office    *backoffice.Service
+	resources *resources.Service
 	ipRules   *backoffice.IPRules
 	billing   *billing.Service
 
@@ -112,7 +116,7 @@ func New(o Options) *Server {
 		webURL: strings.TrimRight(o.WebURL, "/"), now: now,
 		formKey: o.FormKey, turnstileSiteKey: o.TurnstileSiteKey, turnstileSecret: o.TurnstileSecret,
 		turnstileURL:    map[bool]string{true: o.TurnstileURL, false: "https://challenges.cloudflare.com/turnstile/v0/siteverify"}[o.TurnstileURL != ""],
-		signupsPerIPDay: o.SignupsPerIPDay, office: &backoffice.Service{DB: o.DB, Auth: o.Auth},
+		signupsPerIPDay: o.SignupsPerIPDay, office: &backoffice.Service{DB: o.DB, Auth: o.Auth}, resources: o.Resources,
 		ipRules:     &backoffice.IPRules{DB: o.DB, Disabled: o.BackofficeIPAllowlistOff},
 		billing:     o.Billing,
 		authLimiter: newRateLimiter(20, time.Minute),
@@ -232,6 +236,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/signout", s.requireStaff("act", s.handleOfficeSignOut))
 	mux.HandleFunc("POST /v1/admin/accounts/{id}/notes", s.requireStaff("act", s.handleOfficeNote))
 	mux.HandleFunc("GET /v1/admin/alerts", s.requireStaff("view", s.handleOfficeAlerts))
+	mux.HandleFunc("GET /v1/admin/resources", s.requireStaff("view", s.handleOfficeResources))
 	mux.HandleFunc("POST /v1/admin/alerts/dismiss", s.requireStaff("act", s.handleOfficeDismiss))
 	mux.HandleFunc("GET /v1/admin/audit", s.requireStaff("view", s.handleOfficeAudit))
 	mux.HandleFunc("GET /v1/admin/staff", s.requireStaff("staff", s.handleOfficeStaff))

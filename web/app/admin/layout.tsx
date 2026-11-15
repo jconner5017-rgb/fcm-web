@@ -27,7 +27,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       </div>
     );
   }
-  const tabs: [string, string][] = [["/admin", "Overview"], ["/admin/members", "Members"], ["/admin/alerts", "Alerts"], ["/admin/audit", "Audit log"]];
+  const tabs: [string, string][] = [["/admin", "Overview"], ["/admin/members", "Members"], ["/admin/alerts", "Alerts"], ["/admin/resources", "Resources"], ["/admin/audit", "Audit log"]];
   if (a.is_admin) tabs.push(["/admin/staff", "Staff"]);
   return (
     <div className="mt-6">

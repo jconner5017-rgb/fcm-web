@@ -25,6 +25,7 @@ import (
 	"github.com/jconner5017-rgb/fcm-web/internal/export"
 	"github.com/jconner5017-rgb/fcm-web/internal/httpapi"
 	"github.com/jconner5017-rgb/fcm-web/internal/lister"
+	"github.com/jconner5017-rgb/fcm-web/internal/resources"
 	"github.com/jconner5017-rgb/fcm-web/internal/photos"
 	"github.com/jconner5017-rgb/fcm-web/internal/slabs"
 	"github.com/jconner5017-rgb/fcm-web/internal/templates"
@@ -139,7 +140,15 @@ func run(log *slog.Logger) error {
 		log.Warn("TURNSTILE_SITE_KEY / TURNSTILE_SECRET not set: sign-ups use the other bot checks only")
 	}
 
+	// Back office resource monitor. CPU and memory of each Render service show
+	// when RENDER_API_KEY (a Render API key the owner makes) is set.
+	diskGB, _ := strconv.ParseFloat(env("DB_DISK_GB", "1"), 64)
+	resSvc := &resources.Service{DB: database, RenderKey: os.Getenv("RENDER_API_KEY"),
+		APIID: env("RENDER_SERVICE_ID", "srv-dbrgead9fdbs73eakk7g"), WebID: env("RENDER_WEB_SERVICE_ID", "srv-dbrgebs9v7es73ch7oc0"),
+		DBID: env("RENDER_DB_ID", "dpg-dbrge7btqb8s73eg9iag-a"), DBDiskGB: diskGB, Started: time.Now()}
+
 	srv := httpapi.New(httpapi.Options{
+		Resources: resSvc,
 		FormKey: formKey, TurnstileSiteKey: os.Getenv("TURNSTILE_SITE_KEY"), TurnstileSecret: os.Getenv("TURNSTILE_SECRET"), SignupsPerIPDay: perIP,
 		BackofficeIPAllowlistOff: os.Getenv("BACKOFFICE_IP_ALLOWLIST") == "off",
 		Billing:                  &billing.Service{DB: database, WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")},
@@ -150,6 +159,7 @@ func run(log *slog.Logger) error {
 	})
 
 	// Background jobs: send queued email every 15 s, tidy sessions hourly.
+	var lastResourceMail time.Time
 	go func() {
 		mailTick := time.NewTicker(15 * time.Second)
 		tidy := time.NewTicker(time.Hour)
@@ -189,6 +199,26 @@ func run(log *slog.Logger) error {
 					log.Warn("photo cleanup", "err", err)
 				} else if n > 0 {
 					log.Info("old photos removed", "count", n)
+				}
+				// Resource monitor: a daily snapshot, and an email to the owners when
+				// something reaches 85% of its limit (at most once a day).
+				if err := resSvc.Snap(ctx); err != nil {
+					log.Warn("resource snapshot", "err", err)
+				}
+				if rep, err := resSvc.Report(ctx); err == nil {
+					if high := rep.High(); len(high) > 0 && time.Since(lastResourceMail) > 23*time.Hour {
+						lastResourceMail = time.Now()
+						var b strings.Builder
+						b.WriteString("Something on FireCardManager Web is close to its limit:\n\n")
+						for _, g := range high {
+							fmt.Fprintf(&b, "- %s %s: %.0f%% full. %s\n", g.Group, strings.ToLower(g.Label), g.Percent, g.Upgrade)
+						}
+						b.WriteString("\nSee Back office > Resources on https://app.firecardmanager.com/admin/resources\n")
+						for _, to := range admins {
+							_ = mailSvc.Queue(ctx, database, "", to, "FireCardManager Web: time to upgrade", b.String())
+						}
+						log.Warn("resources near their limit", "count", len(high))
+					}
 				}
 			}
 		}
