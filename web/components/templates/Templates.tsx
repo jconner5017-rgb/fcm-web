@@ -8,7 +8,7 @@ export type Template = { id: string; edition: string; source: "pc" | "web"; name
 const SAMPLE: Record<string, string> = {
   "{StoreName}": "", "{PlayerName}": "Victor Wembanyama", "{Team}": "San Antonio Spurs", "{Year}": "2023-24", "{Brand}": "Panini", "{SetName}": "Prizm",
   "{CardNumber}": "136", "{Variety}": "Silver", "{Condition}": "Raw - NM", "{Sport}": "Basketball", "{EstimatedValue}": "$40.00", "{BoxLabel}": "",
-  "{FrontImageUrl}": "/icon.svg", "{BackImageUrl}": "/icon.svg",
+  "{FrontImageUrl}": "/icon-512.png", "{BackImageUrl}": "/icon-512.png",
   "{CardKind}": "Sports Cards", "{SportLabel}": "Sport", "{TeamLabel}": "Team",
 };
 const TOKENS = Object.keys(SAMPLE).filter((k) => k !== "{BoxLabel}");

@@ -10,11 +10,8 @@ export default async function Header() {
       <div className="mx-auto flex max-w-[1100px] flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
         <Link href="/" className="flex items-center gap-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/icon.svg" alt="" width={34} height={34} />
-          <span className="leading-tight">
-            <span className="block text-[17px] font-bold">FireCardManager</span>
-            <span className="block text-[12px] text-muted">Web</span>
-          </span>
+          <img src="/fcm-logo.png" alt="FireCardManager" width={56} height={55} className="rounded-lg" />
+          <span className="text-[12px] font-semibold uppercase tracking-wide text-muted">Web</span>
         </Link>
         <nav className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-[14px] font-semibold">
           {me ? (

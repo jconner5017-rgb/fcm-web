@@ -12,7 +12,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   const { me } = await getMe();
   if (!me) {
     return (
-      <section className="mx-auto mt-14 max-w-[720px] text-center">
+      <section className="mx-auto mt-10 max-w-[720px] text-center">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/fcm-logo.png" alt="FireCardManager" width={321} height={314} className="mx-auto mb-6 w-[240px] rounded-2xl sm:w-[300px]" />
         <h1 className="text-[34px] font-bold leading-tight">Your FireCardManager inventory, from any device</h1>
         <p className="mt-4 text-[17px] text-muted">
           Keep scanning on your PC. Check boxes, rows, prices and what&apos;s sold from a Mac, a phone or any other computer.
