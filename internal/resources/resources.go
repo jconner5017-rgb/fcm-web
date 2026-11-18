@@ -23,18 +23,24 @@ import (
 
 // Gauge is one thing that can run out.
 type Gauge struct {
-	Key     string  `json:"key"`
-	Group   string  `json:"group"` // Database, API server, Website server, Photo storage
-	Label   string  `json:"label"`
-	Used    float64 `json:"used"`
-	Limit   float64 `json:"limit,omitempty"` // 0: no hard limit (pay as you go)
-	Unit    string  `json:"unit"`            // bytes, cpu, count
-	Percent float64 `json:"percent,omitempty"`
-	Level   string  `json:"level"` // ok, warn (70%+), high (85%+), info
-	Note    string  `json:"note,omitempty"`
-	Upgrade string  `json:"upgrade,omitempty"` // what to do when it's high
-	Peak    bool    `json:"peak,omitempty"`    // Used is the highest in the last 24 hours
+	Key         string  `json:"key"`
+	Group       string  `json:"group"` // Database, API server, Website server, Photo storage
+	Label       string  `json:"label"`
+	Used        float64 `json:"used"`
+	Limit       float64 `json:"limit,omitempty"` // 0: no hard limit (pay as you go)
+	Unit        string  `json:"unit"`            // bytes, cpu, count
+	Percent     float64 `json:"percent,omitempty"`
+	Level       string  `json:"level"` // ok, warn (70%+), high (85%+), info
+	Note        string  `json:"note,omitempty"`
+	Upgrade     string  `json:"upgrade,omitempty"` // what to do when it's high
+	Peak        bool    `json:"peak,omitempty"`    // a 24-hour Render metric: Used is the average, PeakUsed the highest hour
+	PeakUsed    float64 `json:"peak_used,omitempty"`
+	PeakPercent float64 `json:"peak_percent,omitempty"`
 }
+
+// peakAlertAt: an average under the warning line still warns when one hour
+// came this close to the limit.
+const peakAlertAt = 95.0
 
 type Table struct {
 	Name  string `json:"name"`
@@ -105,6 +111,14 @@ func (g *Gauge) fill() {
 	if g.Limit > 0 {
 		g.Percent = g.Used / g.Limit * 100
 		g.Level = level(g.Percent)
+		// Render metrics are judged on the 24-hour average, so one busy sync
+		// doesn't read as "getting full"; a near-limit peak still warns.
+		if g.Peak && g.PeakUsed > 0 {
+			g.PeakPercent = g.PeakUsed / g.Limit * 100
+			if g.Level == "ok" && g.PeakPercent >= peakAlertAt {
+				g.Level = "warn"
+			}
+		}
 	} else if g.Level == "" {
 		g.Level = "info"
 	}
@@ -231,8 +245,8 @@ func (s *Service) build(ctx context.Context) (Report, error) {
 			if t.id == "" {
 				continue
 			}
-			mem, memLimit, err1 := render.peak(ctx, t.id, "memory", "memory-limit")
-			cpu, cpuLimit, err2 := render.peak(ctx, t.id, "cpu", "cpu-limit")
+			mem, memPeak, memLimit, err1 := render.peak(ctx, t.id, "memory", "memory-limit")
+			cpu, cpuPeak, cpuLimit, err2 := render.peak(ctx, t.id, "cpu", "cpu-limit")
 			if err1 != nil || err2 != nil {
 				e := err1
 				if e == nil {
@@ -242,7 +256,7 @@ func (s *Service) build(ctx context.Context) (Report, error) {
 				continue
 			}
 			if memLimit > 0 {
-				g := Gauge{Key: t.key + "_memory", Group: t.group, Label: "Memory (24 h peak)", Used: mem, Limit: memLimit, Unit: "bytes", Upgrade: t.upgrade, Peak: true}
+				g := Gauge{Key: t.key + "_memory", Group: t.group, Label: "Memory (24 h average)", Used: mem, PeakUsed: memPeak, Limit: memLimit, Unit: "bytes", Upgrade: t.upgrade, Peak: true}
 				if t.key == "api" {
 					apiMem = g
 				} else {
@@ -250,7 +264,7 @@ func (s *Service) build(ctx context.Context) (Report, error) {
 				}
 			}
 			if cpuLimit > 0 {
-				renderGauges = append(renderGauges, Gauge{Key: t.key + "_cpu", Group: t.group, Label: "CPU (24 h peak hour)", Used: cpu, Limit: cpuLimit, Unit: "cpu", Upgrade: t.upgrade, Peak: true})
+				renderGauges = append(renderGauges, Gauge{Key: t.key + "_cpu", Group: t.group, Label: "CPU (24 h average)", Used: cpu, PeakUsed: cpuPeak, Limit: cpuLimit, Unit: "cpu", Upgrade: t.upgrade, Peak: true})
 			}
 		}
 	}
@@ -432,30 +446,37 @@ func (c *renderClient) metric(ctx context.Context, resource, name string) ([]ser
 	return list, nil
 }
 
-// peak is the highest value of a metric and the latest limit over the last day.
-func (c *renderClient) peak(ctx context.Context, resource, usage, limit string) (float64, float64, error) {
+// peak is the average and highest hourly value of a metric, and the latest
+// limit, over the last day.
+func (c *renderClient) peak(ctx context.Context, resource, usage, limit string) (avg, hi, lim float64, err error) {
 	u, err := c.metric(ctx, resource, usage)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	l, err := c.metric(ctx, resource, limit)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	var hi, lim float64
+	var sum float64
+	var n int
 	for _, s := range u {
 		for _, v := range s.Values {
+			sum += v.Value
+			n++
 			if v.Value > hi {
 				hi = v.Value
 			}
 		}
+	}
+	if n > 0 {
+		avg = sum / float64(n)
 	}
 	for _, s := range l {
 		if n := len(s.Values); n > 0 && s.Values[n-1].Value > 0 {
 			lim = s.Values[n-1].Value
 		}
 	}
-	return hi, lim, nil
+	return avg, hi, lim, nil
 }
 
 // diskGB is the database's disk size.

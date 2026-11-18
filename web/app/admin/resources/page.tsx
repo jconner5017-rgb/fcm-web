@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 type Gauge = {
   key: string; group: string; label: string; used: number; limit?: number; unit: string; percent?: number;
   level: "ok" | "warn" | "high" | "info"; note?: string; upgrade?: string; peak?: boolean;
+  peak_used?: number; peak_percent?: number;
 };
 type Snapshot = { at: string; db_bytes: number; photo_bytes: number; photos: number; cards: number; accounts: number };
 type Report = {
@@ -54,7 +55,7 @@ export default async function ResourcesPage() {
             : "Everything has plenty of room."}
         </p>
         <p className="mt-1 text-[13px] text-muted">
-          Yellow at 70% of a limit, red at 85%. At red the owners get an email once a day, and it shows first on the Alerts page.
+          Yellow at 70% of a limit, red at 85%. Server memory and CPU go by the 24-hour average; a busiest hour over 95% also shows yellow. At red the owners get an email once a day, and it shows first on the Alerts page.
         </p>
       </div>
 
@@ -86,6 +87,9 @@ export default async function ResourcesPage() {
                   </div>
                 ) : null}
                 {g.level !== "info" && g.level !== "ok" && <p className={`mt-1 text-[12px] font-semibold ${g.level === "high" ? "text-bad" : "text-[#d97706]"}`}>{WORDS[g.level]}</p>}
+                {g.peak && g.peak_used ? (
+                  <p className="mt-1 text-[12px] text-muted num">Busiest hour: {amount(g, g.peak_used)}{g.peak_percent != null ? ` (${g.peak_percent.toFixed(0)}%)` : ""}</p>
+                ) : null}
                 {g.note && <p className="mt-1 text-[12px] text-muted">{g.note}</p>}
                 {(g.level === "warn" || g.level === "high") && g.upgrade && <p className="mt-1 text-[12px]"><b>What to do:</b> {g.upgrade}</p>}
               </div>
