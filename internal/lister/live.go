@@ -61,10 +61,10 @@ func (s *Service) Live(ctx context.Context, accountID, edition string, q LiveQue
 	}
 	out := LiveResult{Cards: []LiveCard{}, Page: q.Page, PerPage: q.PerPage}
 	const live = `c.account_id = $1 AND c.edition = $2 AND c.deleted_at IS NULL AND coalesce(c.status, '') <> 'Sold'
-		  AND (c.status IN ('EBA', 'EBF') OR coalesce(c.data->>'marketplace_listing_id', '') <> '')`
+		  AND (c.status IN ('EBA', 'EBF') OR c.c_slabs <> '')`
 	if err := s.DB.QueryRowContext(ctx, `SELECT count(*),
 			count(*) FILTER (WHERE c.status IN ('EBA', 'EBF')),
-			count(*) FILTER (WHERE coalesce(c.data->>'marketplace_listing_id', '') <> '')
+			count(*) FILTER (WHERE c.c_slabs <> '')
 		FROM sync_cards c WHERE `+live, accountID, edition).Scan(&out.All, &out.Ebay, &out.Slabs); err != nil {
 		return out, err
 	}
@@ -73,15 +73,14 @@ func (s *Service) Live(ctx context.Context, accountID, edition string, q LiveQue
 	case "ebay":
 		where += ` AND c.status IN ('EBA', 'EBF')`
 	case "slabs":
-		where += ` AND coalesce(c.data->>'marketplace_listing_id', '') <> ''`
+		where += ` AND c.c_slabs <> ''`
 	}
 	for _, w := range strings.Fields(strings.ToLower(q.Q)) {
 		if len(args) > 12 {
 			break
 		}
 		args = append(args, "%"+strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(w)+"%")
-		where += fmt.Sprintf(` AND lower(concat_ws(' ', c.data->>'player_name', c.data->>'set_name', c.data->>'brand', c.data->>'sku',
-			c.data->>'card_number', c.data->>'year', c.data->>'team', c.data->>'variety')) LIKE $%d`, len(args))
+		where += fmt.Sprintf(` AND c.c_search LIKE $%d`, len(args)) // kept by the database (migration 0022)
 	}
 	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM sync_cards c WHERE `+where, args...).Scan(&out.Total); err != nil {
 		return out, err
@@ -90,7 +89,7 @@ func (s *Service) Live(ctx context.Context, accountID, edition string, q LiveQue
 	rows, err := s.DB.QueryContext(ctx, fmt.Sprintf(`SELECT c.id, coalesce(b.data->>'name', ''), c.data FROM sync_cards c
 		LEFT JOIN sync_boxes b ON b.id = c.box_id AND b.account_id = c.account_id AND b.deleted_at IS NULL
 		WHERE %s
-		ORDER BY c.data->>'marketplace_listed_at' DESC NULLS LAST, c.updated_at DESC, c.id
+		ORDER BY c.c_slabs_at DESC NULLS LAST, c.updated_at DESC, c.id
 		LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args)), args...)
 	if err != nil {
 		return out, err

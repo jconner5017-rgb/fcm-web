@@ -183,9 +183,9 @@ func (s *Service) box(ctx context.Context, accountID, boxID string) (boxState, e
 
 // positions are the places taken in a box (unsold cards with a row and slot).
 func (s *Service) positions(ctx context.Context, accountID, boxID string) (map[int]bool, int, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT data->>'slot_row', (data->>'slot_number')::int
+	rows, err := s.DB.QueryContext(ctx, `SELECT c_row, c_slot::bigint
 		FROM sync_cards WHERE account_id = $1 AND box_id = $2 AND deleted_at IS NULL AND coalesce(status, '') <> $3
-		  AND coalesce(data->>'slot_row', '') <> '' AND jsonb_typeof(data->'slot_number') = 'number'`, accountID, boxID, soldStatus)
+		  AND c_row <> '' AND c_slot IS NOT NULL`, accountID, boxID, soldStatus)
 	if err != nil {
 		return nil, 0, err
 	}

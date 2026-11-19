@@ -286,7 +286,7 @@ func (s *Service) EditCard(ctx context.Context, accountID, id string, baseVersio
 	if moved && box != "" && row != "" && slot != nil {
 		var other string
 		err := s.DB.QueryRowContext(ctx, `SELECT coalesce(data->>'player_name', 'another card') FROM sync_cards
-			WHERE account_id = $1 AND box_id = $2 AND coalesce(data->>'slot_row', '') = $3 AND data->'slot_number' = to_jsonb($4::int)
+			WHERE account_id = $1 AND box_id = $2 AND c_row = $3 AND c_slot = $4
 			  AND id <> $5 AND deleted_at IS NULL AND coalesce(status, '') <> $6 LIMIT 1`,
 			accountID, box, row, *slot, c.ID, soldStatus).Scan(&other)
 		if err == nil {

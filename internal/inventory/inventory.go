@@ -42,6 +42,8 @@ type Service struct {
 	Photos PhotoSigner        // signed photo links for the browser (nil: none)
 	Sealer Sealer             // encrypts the seller's AI key
 	AI     Identifier         // names cards from photos
+
+	cache resultCache // home-page results, until the account's next sync change
 }
 
 // PhotoSigner makes browser links for card photos (photos.Service).
@@ -121,6 +123,10 @@ type Summary struct {
 // Editions lists the apps (sports, tcg) the account has synced cards or
 // boxes from, with their inventory card counts.
 func (s *Service) Editions(ctx context.Context, accountID string) ([]Edition, error) {
+	return cached(ctx, s, accountID, "editions", func() ([]Edition, error) { return s.editions(ctx, accountID) })
+}
+
+func (s *Service) editions(ctx context.Context, accountID string) ([]Edition, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT e.edition, (SELECT count(*) FROM sync_cards c WHERE c.account_id = $1 AND c.edition = e.edition
 			AND c.deleted_at IS NULL AND coalesce(c.status, '') <> $2)
@@ -162,9 +168,14 @@ func PickEdition(eds []Edition, want string) string {
 }
 
 // value is the card's estimated value as a number, or NULL.
-const valueExpr = `CASE WHEN jsonb_typeof(c.data->'estimated_value') = 'number' THEN (c.data->>'estimated_value')::numeric END`
+// valueExpr is a card's estimated value (a column the database keeps from its data; migration 0022).
+const valueExpr = `c.c_value`
 
 func (s *Service) Summary(ctx context.Context, accountID, edition string) (Summary, error) {
+	return cached(ctx, s, accountID, "summary|"+edition, func() (Summary, error) { return s.summary(ctx, accountID, edition) })
+}
+
+func (s *Service) summary(ctx context.Context, accountID, edition string) (Summary, error) {
 	eds, err := s.Editions(ctx, accountID)
 	if err != nil {
 		return Summary{}, err
@@ -202,11 +213,11 @@ func (s *Service) Summary(ctx context.Context, accountID, edition string) (Summa
 
 	// Rows in each box.
 	rows, err = s.DB.QueryContext(ctx, `
-		SELECT c.box_id, coalesce(c.data->>'slot_row', ''), count(*)
+		SELECT c.box_id, c.c_row, count(*)
 		FROM sync_cards c
 		WHERE c.account_id = $1 AND c.edition = $2 AND c.deleted_at IS NULL AND coalesce(c.status, '') <> $3 AND c.box_id IS NOT NULL
 		GROUP BY 1, 2
-		ORDER BY 1, length(coalesce(c.data->>'slot_row', '')), 2`, accountID, ed, soldStatus)
+		ORDER BY 1, length(c.c_row), 2`, accountID, ed, soldStatus)
 	if err != nil {
 		return sum, err
 	}
@@ -307,22 +318,21 @@ type CardPage struct {
 }
 
 var sorts = map[string]string{
-	"player":  `lower(coalesce(c.data->>'player_name', ''))`,
-	"set":     `lower(coalesce(c.data->>'set_name', ''))`,
-	"year":    `c.data->'year'`,
+	"player":  `c.c_player`,
+	"set":     `c.c_set`,
+	"year":    `c.c_year`,
 	"value":   valueExpr,
 	"updated": `c.updated_at`,
-	"added":   `c.data->>'created_at'`,
+	"added":   `c.c_added`,
 	// Box (base name, then its "(cont. N)" number, like the desktop), row, slot.
 	"slot": `lower(split_part(coalesce(b.data->>'name', '~'), ' (cont. ', 1)) %[1]s,
 		coalesce(substring(b.data->>'name' from '\(cont\. (\d+)\)')::int, 1) %[1]s,
-		length(coalesce(c.data->>'slot_row', '')) %[1]s, c.data->>'slot_row' %[1]s, c.data->'slot_number'`,
+		length(c.c_row) %[1]s, c.c_row %[1]s, c.c_slot`,
 }
 
 // searchText is what a search word is matched against.
-const searchText = `concat_ws(' ', c.data->>'player_name', c.data->>'team', c.data->>'brand', c.data->>'set_name',
-	c.data->>'card_number', c.data->>'variety', c.data->>'sku', c.data->>'year', c.data->>'serial_number',
-	c.data->>'grading_company', c.data->>'card_grade', c.data->>'sport', c.data->>'condition', b.data->>'name')`
+// (c_search is kept by the database from the card's data; migration 0022.)
+const searchText = `(c.c_search || ' ' || lower(coalesce(b.data->>'name', '')))`
 
 func likeEscape(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
@@ -354,7 +364,7 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 		where = append(where, fmt.Sprintf(cond, len(args)))
 	}
 	if q.Sport != "" {
-		add("coalesce(c.data->>'sport', '') = $%d", q.Sport)
+		add("c.c_sport = $%d", q.Sport)
 	}
 	switch {
 	case q.Box == "none":
@@ -362,7 +372,7 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	case uuidRE.MatchString(q.Box):
 		add("c.box_id = $%d", strings.ToLower(q.Box))
 		if q.Row != "" && rowRE.MatchString(q.Row) {
-			add("coalesce(c.data->>'slot_row', '') = $%d", q.Row)
+			add("c.c_row = $%d", q.Row)
 		}
 	}
 	switch {
@@ -403,30 +413,63 @@ func (s *Service) Cards(ctx context.Context, accountID string, q Query) (CardPag
 	}
 
 	args = append(args, q.PerPage, (q.Page-1)*q.PerPage)
-	query := `
-		SELECT c.id, coalesce(b.id::text, ''), coalesce(b.data->>'name', ''), c.updated_at, c.data, count(*) OVER ()
+	// Step 1: the page's cards in order, and the total, from the columns
+	// alone (no card's full record is unpacked to sort or count).
+	pageQuery := `
+		SELECT c.id, count(*) OVER ()
 		FROM sync_cards c
 		LEFT JOIN sync_boxes b ON b.id = c.box_id AND b.account_id = c.account_id AND b.deleted_at IS NULL
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY ` + order + `, c.id
 		LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
-	rows, err := s.DB.QueryContext(ctx, query, args...)
+	rows, err := s.DB.QueryContext(ctx, pageQuery, args...)
 	if err != nil {
 		return CardPage{}, err
 	}
-	defer rows.Close()
 	out := CardPage{Cards: []CardRow{}, Page: q.Page, PerPage: q.PerPage}
+	var pageIDs []string
 	for rows.Next() {
-		var r CardRow
-		var data []byte
-		if err := rows.Scan(&r.ID, &r.BoxID, &r.BoxName, &r.UpdatedAt, &data, &out.Total); err != nil {
+		var id string
+		if err := rows.Scan(&id, &out.Total); err != nil {
+			rows.Close()
 			return out, err
 		}
-		r.Data = data
-		out.Cards = append(out.Cards, r)
+		pageIDs = append(pageIDs, id)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return out, err
+	}
+	// Step 2: just those cards' records.
+	if len(pageIDs) > 0 {
+		rows, err = s.DB.QueryContext(ctx, `
+			SELECT c.id, coalesce(b.id::text, ''), coalesce(b.data->>'name', ''), c.updated_at, c.data
+			FROM sync_cards c
+			LEFT JOIN sync_boxes b ON b.id = c.box_id AND b.account_id = c.account_id AND b.deleted_at IS NULL
+			WHERE c.account_id = $1 AND c.id = ANY($2::uuid[])`, accountID, pq.Array(pageIDs))
+		if err != nil {
+			return out, err
+		}
+		byID := make(map[string]CardRow, len(pageIDs))
+		for rows.Next() {
+			var r CardRow
+			var data []byte
+			if err := rows.Scan(&r.ID, &r.BoxID, &r.BoxName, &r.UpdatedAt, &data); err != nil {
+				rows.Close()
+				return out, err
+			}
+			r.Data = data
+			byID[r.ID] = r
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return out, err
+		}
+		for _, id := range pageIDs {
+			if r, ok := byID[id]; ok {
+				out.Cards = append(out.Cards, r)
+			}
+		}
 	}
 	if q.All {
 		return out, nil
@@ -656,8 +699,8 @@ func DisplayNumber(name string) int {
 // sport (category), then box, then row, with card counts.
 func (s *Service) Tree(ctx context.Context, accountID, edition string) ([]TreeSport, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT coalesce(c.data->>'sport', ''), coalesce(b.id::text, ''), coalesce(b.data->>'name', ''), coalesce(c.data->>'slot_row', ''), count(*),
-			coalesce(max(CASE WHEN jsonb_typeof(c.data->'slot_number') = 'number' THEN (c.data->>'slot_number')::int END), 0),
+		SELECT c.c_sport, coalesce(b.id::text, ''), coalesce(b.data->>'name', ''), c.c_row, count(*),
+			coalesce(max(c.c_slot), 0)::bigint,
 			coalesce(b.data->>'capacity', ''), coalesce(b.data->>'kind', ''), coalesce(b.data->>'closed_at', ''), coalesce(b.data->>'high_water', '')
 		FROM sync_cards c
 		LEFT JOIN sync_boxes b ON b.id = c.box_id AND b.account_id = c.account_id AND b.deleted_at IS NULL

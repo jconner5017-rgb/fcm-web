@@ -19,7 +19,7 @@ var migrationFiles embed.FS
 
 // Open connects to Postgres and verifies the connection.
 func Open(ctx context.Context, url string) (*sql.DB, error) {
-	d, err := sql.Open("postgres", url)
+	d, err := sql.Open("postgres", withoutJIT(url))
 	if err != nil {
 		return nil, err
 	}
@@ -34,6 +34,23 @@ func Open(ctx context.Context, url string) (*sql.DB, error) {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	return d, nil
+}
+
+// withoutJIT turns off Postgres's JIT compiler for this app's connections
+// (2026-11-19): the website's queries are short, and compiling them took
+// longer than running them (130 ms of a 140 ms query on a 5,000-card
+// account). lib/pq passes unknown URL settings to the server.
+func withoutJIT(url string) string {
+	if strings.Contains(url, "jit=") {
+		return url
+	}
+	if strings.HasPrefix(url, "postgres://") || strings.HasPrefix(url, "postgresql://") {
+		if strings.Contains(url, "?") {
+			return url + "&jit=off"
+		}
+		return url + "?jit=off"
+	}
+	return url + " jit=off" // key=value form
 }
 
 // Migrate applies every migration in migrations/ that has not run yet,

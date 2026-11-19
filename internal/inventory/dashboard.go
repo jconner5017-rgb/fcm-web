@@ -87,77 +87,54 @@ func (d *dashSold) UnmarshalJSON(b []byte) error {
 func nonEmpty(p *string) bool { return p != nil && *p != "" }
 
 func (s *Service) Dashboard(ctx context.Context, accountID, edition string, now time.Time) (Dashboard, error) {
-	out := Dashboard{Edition: edition, Sales31D: []DayTotal{}, Recent: []CardRow{}}
-
-	rows, err := s.DB.QueryContext(ctx, `SELECT data FROM sync_cards
-		WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL AND coalesce(status, '') <> $3`, accountID, edition, soldStatus)
+	// The totals are cached until the next sync change (and per UTC day, for
+	// the sales windows); the recently added cards carry signed photo links,
+	// so they're read fresh every time.
+	out, err := cached(ctx, s, accountID, "dashboard|"+edition+"|"+now.UTC().Format("2006-01-02"), func() (Dashboard, error) {
+		return s.dashboard(ctx, accountID, edition, now)
+	})
 	if err != nil {
 		return out, err
 	}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			rows.Close()
-			return out, err
-		}
-		var c dashCard
-		_ = json.Unmarshal(raw, &c)
-		out.TotalActiveCards++
-		sale := 0.0
-		if c.SalePrice != nil {
-			sale = *c.SalePrice
-		}
-		priced := c.EstimatedValue > 0 || sale > 0
-		onEbay := c.Status == "EBA" || c.Status == "EBF"
-		onSlabs := nonEmpty(c.Marketplace)
-		if priced {
-			out.PricedCount++
-			if c.EstimatedValue > 0 {
-				out.PricedInventoryValue += c.EstimatedValue
-			} else {
-				out.PricedInventoryValue += sale
-			}
-		}
-		if c.Status == "Ready" && !onSlabs {
-			out.ReadyToListCount++
-			if c.SalePrice != nil {
-				out.ReadyToListPotentialValue += sale
-			} else {
-				out.ReadyToListPotentialValue += c.EstimatedValue
-			}
-		}
-		if onEbay || onSlabs {
-			out.LiveCount++
-		}
-		if onEbay {
-			out.EbayLiveCount++
-		}
-		if onSlabs {
-			out.SlabsLiveCount++
-		}
-		if onEbay && onSlabs {
-			out.BothLiveCount++
-		}
-		if c.PlayerName == pendingName {
-			out.NeedsIdentificationCount++
-		} else {
-			out.AiDocumentedCount++
-			if !priced {
-				out.MissingPricingCount++
-			}
-		}
-		if c.Status == "Ready" || onEbay || onSlabs {
-			if c.Status == "EBA" {
-				if c.StartBid == nil || *c.StartBid <= 0 {
-					out.ListingErrorsCount++
-				}
-			} else if sale <= 0 {
-				out.ListingErrorsCount++
-			}
-		}
+	out.Recent = []CardRow{}
+	recent, err := s.Cards(ctx, accountID, Query{Edition: edition, Sort: "added", Desc: true, PerPage: 8})
+	if err == nil {
+		out.Recent = recent.Cards
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	return out, nil
+}
+
+func (s *Service) dashboard(ctx context.Context, accountID, edition string, now time.Time) (Dashboard, error) {
+	out := Dashboard{Edition: edition, Sales31D: []DayTotal{}, Recent: []CardRow{}}
+
+	// One counting query over the columns the database keeps from each card
+	// (migration 0022), the same rules as the desktop's Dashboard.
+	err := s.DB.QueryRowContext(ctx, `
+		WITH c AS (
+			SELECT status, coalesce(c_value, 0) AS v, c_sale, coalesce(c_sale, 0) AS sale, c_bid,
+				(coalesce(c_value, 0) > 0 OR coalesce(c_sale, 0) > 0) AS priced,
+				status IN ('EBA', 'EBF') AS ebay, c_slabs <> '' AS slabs, c_player = lower($4) AS pending
+			FROM sync_cards
+			WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL AND coalesce(status, '') <> $3)
+		SELECT count(*),
+			count(*) FILTER (WHERE priced),
+			coalesce(sum(CASE WHEN v > 0 THEN v ELSE sale END) FILTER (WHERE priced), 0),
+			count(*) FILTER (WHERE status = 'Ready' AND NOT slabs),
+			coalesce(sum(CASE WHEN c_sale IS NOT NULL THEN sale ELSE v END) FILTER (WHERE status = 'Ready' AND NOT slabs), 0),
+			count(*) FILTER (WHERE ebay OR slabs),
+			count(*) FILTER (WHERE ebay),
+			count(*) FILTER (WHERE slabs),
+			count(*) FILTER (WHERE ebay AND slabs),
+			count(*) FILTER (WHERE pending),
+			count(*) FILTER (WHERE NOT pending),
+			count(*) FILTER (WHERE NOT pending AND NOT priced),
+			count(*) FILTER (WHERE (status = 'Ready' OR ebay OR slabs) AND
+				CASE WHEN status = 'EBA' THEN coalesce(c_bid, 0) <= 0 ELSE sale <= 0 END)
+		FROM c`, accountID, edition, soldStatus, pendingName).Scan(
+		&out.TotalActiveCards, &out.PricedCount, &out.PricedInventoryValue, &out.ReadyToListCount, &out.ReadyToListPotentialValue,
+		&out.LiveCount, &out.EbayLiveCount, &out.SlabsLiveCount, &out.BothLiveCount, &out.NeedsIdentificationCount,
+		&out.AiDocumentedCount, &out.MissingPricingCount, &out.ListingErrorsCount)
+	if err != nil {
 		return out, err
 	}
 
@@ -172,7 +149,7 @@ func (s *Service) Dashboard(ctx context.Context, accountID, edition string, now 
 	for i := range out.Sales31D {
 		days[out.Sales31D[i].Day] = &out.Sales31D[i]
 	}
-	rows, err = s.DB.QueryContext(ctx, `SELECT data FROM sync_sold WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL
+	rows, err := s.DB.QueryContext(ctx, `SELECT data FROM sync_sold WHERE account_id = $1 AND edition = $2 AND deleted_at IS NULL
 		AND coalesce(data->>'sale_date', '') >= $3`, accountID, edition, prev7.AddDate(0, 0, -20).Format("2006-01-02"))
 	if err != nil {
 		return out, err
@@ -214,9 +191,5 @@ func (s *Service) Dashboard(ctx context.Context, accountID, edition string, now 
 		out.SellThroughRate = float64(out.UnitsSold7D) / float64(n) * 100
 	}
 
-	recent, err := s.Cards(ctx, accountID, Query{Edition: edition, Sort: "added", Desc: true, PerPage: 8})
-	if err == nil {
-		out.Recent = recent.Cards
-	}
 	return out, nil
 }

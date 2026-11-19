@@ -230,7 +230,8 @@ func setup(t *testing.T) *env {
 			fmt.Fprint(w, `{"diskSizeGB": 1}`)
 			return
 		}
-		fmt.Fprintf(w, `[{"labels":[],"unit":"x","values":[{"timestamp":"2026-11-15T00:00:00Z","value":%g},{"timestamp":"2026-11-15T01:00:00Z","value":%g}]}]`, val/2, val)
+		// Gauges go by the 24-hour average: a steady reading (memory 470 of 512 MB all day).
+		fmt.Fprintf(w, `[{"labels":[],"unit":"x","values":[{"timestamp":"2026-11-15T00:00:00Z","value":%g},{"timestamp":"2026-11-15T01:00:00Z","value":%g}]}]`, val, val)
 	}))
 	t.Cleanup(renderSrv.Close)
 	res := &resources.Service{DB: d, RenderKey: "rnd_test", APIID: "srv-api", WebID: "srv-web", DBID: "dpg-db", Started: time.Now()}

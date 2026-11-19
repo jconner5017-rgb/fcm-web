@@ -68,7 +68,7 @@ func (s *Service) RefreshEbay(ctx context.Context, accountID string) (EbayRefres
 		var raw []byte
 		var version int
 		err := s.DB.QueryRowContext(ctx, `SELECT id, edition, data, version FROM sync_cards
-			WHERE account_id = $1 AND deleted_at IS NULL AND upper(data->>'sku') = $2
+			WHERE account_id = $1 AND deleted_at IS NULL AND c_sku = $2
 			ORDER BY updated_at DESC LIMIT 1`, accountID, sku).Scan(&id, &edition, &raw, &version)
 		if err != nil {
 			out.Orphans = append(out.Orphans, o)

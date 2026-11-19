@@ -171,7 +171,7 @@ func (s *Service) checkInventory(ctx context.Context, a acct, end func(string) (
 		var best int
 		err := s.DB.QueryRowContext(ctx, `WITH mine AS (
 				SELECT DISTINCT `+cardFP+` AS fp FROM sync_cards
-				WHERE account_id = $1 AND deleted_at IS NULL AND coalesce(data->>'player_name', '') <> '' AND coalesce(data->>'set_name', '') <> ''
+				WHERE account_id = $1 AND deleted_at IS NULL AND c_player <> '' AND c_set <> ''
 				LIMIT $3)
 			SELECT coalesce(max(c), 0) FROM (SELECT count(*) AS c FROM trial_card_marks m JOIN mine USING (fp)
 				WHERE m.account_ref <> $1 AND m.account_created < $2 GROUP BY m.account_ref) t`,
@@ -181,7 +181,7 @@ func (s *Service) checkInventory(ctx context.Context, a acct, end func(string) (
 		}
 		var distinct int
 		if err := s.DB.QueryRowContext(ctx, `SELECT count(DISTINCT `+cardFP+`) FROM sync_cards WHERE account_id = $1 AND deleted_at IS NULL
-			AND coalesce(data->>'player_name', '') <> '' AND coalesce(data->>'set_name', '') <> ''`, a.id).Scan(&distinct); err != nil {
+			AND c_player <> '' AND c_set <> ''`, a.id).Scan(&distinct); err != nil {
 			return "", err
 		}
 		if best >= MinMatch && float64(best) >= MatchShare*float64(min(distinct, maxMarks)) {
@@ -190,7 +190,7 @@ func (s *Service) checkInventory(ctx context.Context, a acct, end func(string) (
 	}
 	if _, err := s.DB.ExecContext(ctx, `INSERT INTO trial_card_marks (account_ref, fp, account_created)
 		SELECT DISTINCT $1::uuid, `+cardFP+`, $2::timestamptz FROM sync_cards
-		WHERE account_id = $1 AND deleted_at IS NULL AND coalesce(data->>'player_name', '') <> '' AND coalesce(data->>'set_name', '') <> ''
+		WHERE account_id = $1 AND deleted_at IS NULL AND c_player <> '' AND c_set <> ''
 		LIMIT $3
 		ON CONFLICT DO NOTHING`, a.id, a.created.Time, maxMarks); err != nil {
 		return "", err
@@ -205,7 +205,7 @@ func (s *Service) checkInventory(ctx context.Context, a acct, end func(string) (
 func (s *Service) Sweep(ctx context.Context) (int, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT a.id FROM accounts a
 		WHERE a.status = 'active' AND a.trial_marked_cards <> (SELECT count(*) FROM sync_cards c WHERE c.account_id = a.id AND c.deleted_at IS NULL
-			AND coalesce(c.data->>'player_name', '') <> '' AND coalesce(c.data->>'set_name', '') <> '')
+			AND c.c_player <> '' AND c.c_set <> '')
 		   OR NOT EXISTS (SELECT 1 FROM trial_claims t WHERE t.account_ref = a.id AND t.kind = 'email')
 		ORDER BY a.created_at LIMIT 200`)
 	if err != nil {
