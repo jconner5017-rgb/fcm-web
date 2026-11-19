@@ -324,6 +324,13 @@ var sorts = map[string]string{
 	"value":   valueExpr,
 	"updated": `c.updated_at`,
 	"added":   `c.c_added`,
+	// The Card Editor's column headings (2026-11-19), like the desktop grid.
+	"sku":    `c.c_sku`,
+	"sport":  `c.c_sport`,
+	"brand":  `c.c_brand`,
+	"number": `c.c_number`,
+	"price":  `c.c_sale`,
+	"status": `coalesce(c.status, '') %[1]s, c.c_slabs <> ''`,
 	// Box (base name, then its "(cont. N)" number, like the desktop), row, slot.
 	"slot": `lower(split_part(coalesce(b.data->>'name', '~'), ' (cont. ', 1)) %[1]s,
 		coalesce(substring(b.data->>'name' from '\(cont\. (\d+)\)')::int, 1) %[1]s,

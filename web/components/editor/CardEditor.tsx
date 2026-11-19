@@ -75,12 +75,20 @@ function comcUrl(d: CardRow["data"]): string {
   return "https://www.comc.com/Cards,=~" + encodeURIComponent(parts).replace(/%20/g, "+");
 }
 
+// The list's columns: [sort key, heading, right-aligned].
+const COLUMNS: [string, string, boolean?][] = [
+  ["slot", "Location"], ["sku", "SKU"], ["sport", "Category"], ["year", "Year"], ["brand", "Product"],
+  ["set", "Set"], ["player", "Name"], ["number", "Card #"], ["price", "Price", true], ["status", "Status"],
+];
+
 export default function CardEditor({ edition, sports, start }: { edition: string; sports: TreeSport[]; start: Filter & { id?: string } }) {
   const tcg = edition === "tcg";
   const cats = tcg ? [...TCG, "Mixed"] : SPORTS;
   const [filter, setFilter] = useState<Filter>({ sport: start.sport, box: start.box, row: start.row, q: start.q });
   const [q, setQ] = useState(start.q);
   const [page, setPage] = useState(1);
+  // Click a column heading to sort by it, again to reverse (like the desktop grid).
+  const [sort, setSort] = useState<{ key: string; desc: boolean }>({ key: "slot", desc: false });
   const [list, setList] = useState<CardPage | null>(null);
   const [selId, setSelId] = useState<string | undefined>(start.id);
   const [card, setCard] = useState<CardDetail | null>(null);
@@ -96,14 +104,15 @@ export default function CardEditor({ edition, sports, start }: { edition: string
   const backFile = useRef<HTMLInputElement>(null);
 
   const loadList = useCallback(async () => {
-    const p = new URLSearchParams({ edition, sort: "slot", per: String(PER), page: String(page) });
+    const p = new URLSearchParams({ edition, sort: sort.key, per: String(PER), page: String(page) });
+    if (sort.desc) p.set("dir", "desc");
     for (const [k, v] of Object.entries(filter) as [string, string][]) if (v) p.set(k, v);
     const r = await send<CardPage>("GET", "/v1/inventory/cards?" + p.toString());
     if (r.ok) {
       setList(r.data);
       setSelId((cur) => (cur && r.data.cards.some((c: CardRow) => c.id === cur) ? cur : cur ?? r.data.cards[0]?.id));
     } else setMsg({ text: r.message, bad: true });
-  }, [edition, filter, page]);
+  }, [edition, filter, page, sort]);
   useEffect(() => { loadList(); }, [loadList]);
 
   const loadCard = useCallback(async (id: string) => {
@@ -330,9 +339,18 @@ export default function CardEditor({ edition, sports, start }: { edition: string
                       <input type="checkbox" aria-label="Check all on this page" checked={cards.length > 0 && cards.every((c) => checked.has(c.id))}
                         onChange={(e) => setChecked(e.target.checked ? new Set(cards.map((c) => c.id)) : new Set())} />
                     </th>
-                    <th className="px-2">Location</th><th className="px-2">SKU</th><th className="px-2">Category</th><th className="px-2">Year</th>
-                    <th className="px-2">Product</th><th className="px-2">Set</th><th className="px-2">Name</th><th className="px-2">Card #</th>
-                    <th className="px-2 text-right">Price</th><th className="px-2">Status</th>
+                    {COLUMNS.map(([key, label, right]) => {
+                      const on = sort.key === key;
+                      return (
+                        <th key={key} className={`px-2 ${right ? "text-right" : ""}`} aria-sort={on ? (sort.desc ? "descending" : "ascending") : "none"}>
+                          <button type="button" title={`Sort by ${label.toLowerCase()}`}
+                            className={`inline-flex items-center gap-1 uppercase hover:text-ink ${on ? "text-ink" : ""}`}
+                            onClick={() => { setSort(on ? { key, desc: !sort.desc } : { key, desc: false }); setPage(1); }}>
+                            {label}<span aria-hidden className="w-2">{on ? (sort.desc ? "▼" : "▲") : ""}</span>
+                          </button>
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>

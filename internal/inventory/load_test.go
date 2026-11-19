@@ -319,3 +319,52 @@ func TestLoadSameAnswers(t *testing.T) {
 	}
 	d.Exec(`DELETE FROM sync_cards WHERE data->>'sku' LIKE 'ODD-%'`)
 }
+
+// The Card Editor's sortable headings: each sort runs and puts the right card first.
+func TestLoadEditorSorts(t *testing.T) {
+	url := os.Getenv("LOAD_DATABASE_URL")
+	if url == "" {
+		t.Skip("LOAD_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	d, err := db.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	var acct string
+	d.QueryRow(`SELECT account_id FROM sync_cards GROUP BY 1 ORDER BY 1 LIMIT 1`).Scan(&acct)
+	s := &Service{DB: d}
+	var maxSale float64
+	d.QueryRow(`SELECT max((data->>'sale_price')::numeric) FROM sync_cards WHERE account_id = $1 AND deleted_at IS NULL
+		AND jsonb_typeof(data->'sale_price') = 'number' AND coalesce(status, '') <> 'Sold'`, acct).Scan(&maxSale)
+	for _, key := range []string{"sku", "sport", "brand", "number", "price", "status"} {
+		for _, desc := range []bool{false, true} {
+			start := time.Now()
+			pg, err := s.Cards(ctx, acct, Query{Edition: "sports", Sort: key, Desc: desc, PerPage: 50})
+			if err != nil || len(pg.Cards) == 0 {
+				t.Fatalf("sort %s: %v", key, err)
+			}
+			if key == "price" && desc {
+				var first struct {
+					SalePrice float64 `json:"sale_price"`
+				}
+				json.Unmarshal(pg.Cards[0].Data, &first)
+				if first.SalePrice != maxSale {
+					t.Fatalf("price desc starts at %v, max is %v", first.SalePrice, maxSale)
+				}
+			}
+			if key == "status" {
+				var a, b struct{ Status string }
+				json.Unmarshal(pg.Cards[0].Data, &a)
+				json.Unmarshal(pg.Cards[len(pg.Cards)-1].Data, &b)
+				if (!desc && a.Status > b.Status) || (desc && a.Status < b.Status) {
+					t.Fatalf("status order: %s .. %s (desc %v)", a.Status, b.Status, desc)
+				}
+			}
+			t.Logf("sort %-6s desc=%-5v %5.1f ms", key, desc, float64(time.Since(start).Microseconds())/1000)
+		}
+	}
+}
